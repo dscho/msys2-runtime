@@ -1176,14 +1176,15 @@ mount_info::from_fstab_line (char *line, bool user)
     }
   else if (!strcmp (fs_type, "usertemp"))
     {
-      WCHAR tmp[MAX_PATH];
+      WCHAR tmp[PATH_MAX + 1];
 
-      if (GetEnvironmentVariableW (L"TEMP", tmp, sizeof(tmp)) && *tmp)
+      if (GetTempPathW (PATH_MAX, tmp))
 	{
-          DWORD len;
-          char mb_tmp[len = sys_wcstombs (NULL, 0, tmp)];
-          sys_wcstombs (mb_tmp, len, tmp);
+	  tmp_pathbuf tp;
+	  char *mb_tmp = tp.c_get ();
+	  sys_wcstombs (mb_tmp, PATH_MAX, tmp);
 
+	  mount_flags |= MOUNT_USER_TEMP;
 	  int res = mount_table->add_item (mb_tmp, posix_path, mount_flags);
 	  if (res && get_errno () == EMFILE)
 	    return false;
@@ -1770,6 +1771,9 @@ fillout_mntent (const char *native_path, const char *posix_path, unsigned flags)
 
   if (flags & (MOUNT_BIND))
     strcat (_my_tls.locals.mnt_opts, (char *) ",bind");
+
+  if (flags & (MOUNT_USER_TEMP))
+    strcat (_my_tls.locals.mnt_opts, (char *) ",usertemp");
 
   ret.mnt_opts = _my_tls.locals.mnt_opts;
 
