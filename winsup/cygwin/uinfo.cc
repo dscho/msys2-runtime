@@ -904,6 +904,8 @@ fetch_from_path (cyg_ldap *pldap, PUSER_INFO_3 ui, cygpsid &sid, PCWSTR str,
 	    case L'u':
 	      if (full_qualified)
 		{
+		  if (!dom)
+		    break;
 		  w = wcpncpy (w, dom, we - w);
 		  if (w < we)
 		    *w++ = cygheap->pg.nss_separator ()[0];
@@ -914,6 +916,8 @@ fetch_from_path (cyg_ldap *pldap, PUSER_INFO_3 ui, cygpsid &sid, PCWSTR str,
 	      w = wcpncpy (w, name, we - w);
 	      break;
 	    case L'D':
+	      if (!dom)
+		break;
 	      w = wcpncpy (w, dom, we - w);
 	      break;
 	    case L'H':
@@ -2200,6 +2204,10 @@ pwdgrp::fetch_account_from_windows (fetch_user_arg_t &arg, cyg_ldap *pldap)
 	{
 	  /* Just some fake. */
 	  sid = csid.create (99, 1, 0);
+	  if (arg.id == cygheap->user.real_uid)
+	    home = cygheap->pg.get_home ((PUSER_INFO_3) NULL,
+					 cygheap->user.sid(),
+					 NULL, NULL, false);
 	  break;
 	}
       else if (arg.id >= UNIX_POSIX_OFFSET)
@@ -2760,10 +2768,11 @@ pwdgrp::fetch_account_from_windows (fetch_user_arg_t &arg, cyg_ldap *pldap)
      logon.  Unless it's the SYSTEM account.  This conveniently allows to
      logon interactively as SYSTEM for debugging purposes. */
   else if (acc_type != SidTypeUser && sid != well_known_system_sid)
-    __small_sprintf (linebuf, "%W:*:%u:%u:U-%W\\%W,%s:/:/sbin/nologin",
+    __small_sprintf (linebuf, "%W:*:%u:%u:U-%W\\%W,%s:%s:/sbin/nologin",
 		     posix_name, uid, gid,
 		     dom, name,
-		     sid.string ((char *) sidstr));
+		     sid.string ((char *) sidstr),
+		     home ? home : "/");
   else
     __small_sprintf (linebuf, "%W:*:%u:%u:%s%sU-%W\\%W,%s:%s%W:%s",
 		     posix_name, uid, gid,
