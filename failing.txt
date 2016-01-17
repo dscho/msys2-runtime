@@ -1,16 +1,11 @@
-t1402-check-ref-format
 t1506-rev-parse-diagnosis
 t1508-at-combinations
 t1513-rev-parse-prefix
 t2027-checkout-long-paths
-t3001-ls-files-others-exclude
-t3070-wildmatch
 t5500-fetch-pack
 t5510-fetch
 t5601-clone
 t5602-clone-remote-exec
 t5603-clone-dirname
 t5801-remote-helpers
-t6018-rev-list-glob
-t6130-pathspec-noglob
 t7400-submodule-basic
