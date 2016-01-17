@@ -5,5 +5,3 @@ t2027-checkout-long-paths
 t5510-fetch
 t5602-clone-remote-exec
 t5603-clone-dirname
-t5801-remote-helpers
-t7400-submodule-basic
