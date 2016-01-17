@@ -1,7 +1,4 @@
-t1506-rev-parse-diagnosis
 t1508-at-combinations
-t1513-rev-parse-prefix
 t2027-checkout-long-paths
-t5510-fetch
 t5602-clone-remote-exec
 t5603-clone-dirname
