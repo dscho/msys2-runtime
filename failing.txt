@@ -7,7 +7,6 @@ t1513-rev-parse-prefix
 t2027-checkout-long-paths
 t3001-ls-files-others-exclude
 t3070-wildmatch
-t3301-notes
 t3400-rebase
 t3404-rebase-interactive
 t3703-add-magic-pathspec
@@ -18,7 +17,6 @@ t5601-clone
 t5602-clone-remote-exec
 t5603-clone-dirname
 t5801-remote-helpers
-t6006-rev-list-format
 t6018-rev-list-glob
 t6130-pathspec-noglob
 t6132-pathspec-exclude
