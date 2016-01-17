@@ -1,4 +1,3 @@
-t1508-at-combinations
 t2027-checkout-long-paths
 t5602-clone-remote-exec
 t5603-clone-dirname
