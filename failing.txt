@@ -23,6 +23,5 @@ t6132-pathspec-exclude
 t7201-co
 t7400-submodule-basic
 t9001-send-email
-t9350-fast-export
 t9700-perl-git
 t9903-bash-prompt
