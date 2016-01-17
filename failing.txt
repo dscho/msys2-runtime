@@ -1,3 +1,1 @@
 t2027-checkout-long-paths
-t5602-clone-remote-exec
-t5603-clone-dirname
