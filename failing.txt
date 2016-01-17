@@ -1,7 +1,6 @@
 t0003-attributes
 t1402-check-ref-format
 t1501-worktree
-t1504-ceiling-dirs
 t1506-rev-parse-diagnosis
 t1508-at-combinations
 t1513-rev-parse-prefix
@@ -13,7 +12,6 @@ t3400-rebase
 t3404-rebase-interactive
 t3703-add-magic-pathspec
 t4208-log-magic-pathspec
-t4211-line-log
 t5500-fetch-pack
 t5510-fetch
 t5601-clone
