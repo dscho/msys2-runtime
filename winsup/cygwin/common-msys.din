@@ -33,7 +33,6 @@ sys_errlist = _sys_errlist DATA
 sys_nerr = _sys_nerr DATA
 sys_sigabbrev DATA
 sys_siglist DATA
-kill_process_tree DATA
 
 # Exported functions
 _Exit SIGFE
@@ -1470,3 +1469,4 @@ y1 NOSIGFE
 y1f NOSIGFE
 yn NOSIGFE
 ynf NOSIGFE
+kill_process_tree DATA
