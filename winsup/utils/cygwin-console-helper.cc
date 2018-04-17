@@ -137,7 +137,18 @@ main (int argc, char **argv)
 	  return 1;
 	}
 
-      if (strcmp(argv[2], "CtrlRoutine"))
+      if (!strcmp(argv[2], "ExitProcess"))
+        {
+	  HINSTANCE kernel32 = GetModuleHandle ("kernel32");
+	  if (!kernel32)
+	    return 1;
+	  void *address = (void *) GetProcAddress (kernel32, "ExitProcess");
+	  if (!address)
+	    return 1;
+	  output (0, "%p\n", address);
+	  return 0;
+	}
+      else if (strcmp(argv[2], "CtrlRoutine"))
         {
 	  output (1, "Unhandled function name: %s\n", argv[2]);
 	  return 1;
@@ -149,7 +160,7 @@ main (int argc, char **argv)
 	  return 1;
 	}
 
-      if (!GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0))
+      if (!GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0))
         {
 	  output (1, "Could not simulate Ctrl+Break\n");
 	  return 1;
