@@ -13,9 +13,8 @@
  * functions are marked as file-local.
  *
  * The idea is to inject a thread into the given process that runs either
- * kernel32!CtrlRoutine() (which is the work horse of
- * GenerateConsoleCtrlEvent()) for SIGINT and SIGBREAK, or ExitProcess() for
- * SIGTERM.
+ * kernel32!CtrlRoutine() (i.e. the work horse of GenerateConsoleCtrlEvent())
+ * for SIGINT (Ctrl+C) and SIGQUIT (Ctrl+Break), or ExitProcess() for SIGTERM.
  *
  * For SIGKILL, we run TerminateProcess() without injecting anything, and this
  * is also the fall-back when the previous methods are unavailable.
@@ -228,17 +227,17 @@ static int
 exit_one_process(HANDLE process, int exit_code)
 {
   LPTHREAD_START_ROUTINE address = NULL;
+  int signo = exit_code & 0x7f;
 
-  switch (exit_code & 0x7f)
+  switch (signo)
     {
       case SIGINT:
-      case 21: /* SIGBREAK */
+      case SIGQUIT:
 	address = get_ctrl_routine_address_for_process(process);
 	if (address &&
 	    !inject_remote_thread_into_process(process, address,
-					       (exit_code & 0x7f) == SIGINT ?
-					       CTRL_C_EVENT :
-					       CTRL_BREAK_EVENT))
+					       signo == SIGINT ?
+					       CTRL_C_EVENT : CTRL_BREAK_EVENT))
 	  return 0;
 	/* fall-through */
       case SIGTERM:
@@ -254,6 +253,7 @@ exit_one_process(HANDLE process, int exit_code)
 }
 
 #include <tlhelp32.h>
+#include <sys/unistd.h>
 
 /**
  * Terminates the process corresponding to the process ID and all of its
@@ -268,6 +268,7 @@ exit_process_tree(HANDLE main_process, int exit_code)
   DWORD pids[16384];
   int max_len = sizeof (pids) / sizeof (*pids), i, len, ret = 0;
   pid_t pid = GetProcessId (main_process);
+  int signo = exit_code & 0x7f;
 
   pids[0] = (DWORD) pid;
   len = 1;
@@ -283,17 +284,19 @@ exit_process_tree(HANDLE main_process, int exit_code)
    */
   for (;;)
     {
-      int orig_len = len;
-      pid_t cyg_pid;
-
       memset (&entry, 0, sizeof (entry));
       entry.dwSize = sizeof (entry);
 
       if (!Process32First (snapshot, &entry))
         break;
 
+      int orig_len = len;
       do
         {
+	  /**
+	   * Look for the parent process ID in the list of pids to kill, and if
+	   * found, add it to the list.
+	   */
           for (i = len - 1; i >= 0; i--)
             {
               if (pids[i] == entry.th32ProcessID)
@@ -305,10 +308,12 @@ exit_process_tree(HANDLE main_process, int exit_code)
 	      cyg_pid = cygwin_winpid_to_pid(entry.th32ProcessID);
               if (cyg_pid > -1)
                 {
-                  kill(cyg_pid, (exit_code & 0x7f));
-                  continue;
+                  if (cyg_pid == getpgid (cyg_pid))
+                    kill(cyg_pid, signo);
+                  break;
                 }
 	      pids[len++] = entry.th32ProcessID;
+	      break;
             }
         }
       while (len < max_len && Process32Next (snapshot, &entry));

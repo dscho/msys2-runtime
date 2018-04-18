@@ -1561,8 +1561,8 @@ dosig:
           goto done;
         default:
           sigproc_printf ("terminating captive process");
-          exit_process_tree (ch_spawn, 128 + (sigExeced = si.si_signo));
-          break;
+          rc = exit_process_tree (ch_spawn, 128 + (sigExeced = si.si_signo));
+          goto done;
         }
     }
   /* Dispatch to the appropriate function. */
