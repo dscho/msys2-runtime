@@ -1156,6 +1156,7 @@ __main (void)
 void __reg1
 do_exit (int status)
 {
+small_printf ("pid %d: do_exit (%d), exit_state %d\n", (int)GetProcessId(GetCurrentProcess()), status, exit_state);
   syscall_printf ("do_exit (%d), exit_state %d", status, exit_state);
 
   lock_process until_exit (true);
@@ -1286,12 +1287,14 @@ extern "C" void
 cygwin_exit (int n)
 {
   exit_state = ES_EXIT_STARTING;
+small_printf("%s:%d exit(%d) (pid %d)\n", __FILE__, __LINE__, n, (int)GetProcessId(GetCurrentProcess()));
   exit (n);
 }
 
 extern "C" void
 _exit (int n)
 {
+small_printf("%s:%d do_exit(%d << 8) (pid %d)\n", __FILE__, __LINE__, n, (int)GetProcessId(GetCurrentProcess()));
   do_exit (((DWORD) n & 0xff) << 8);
 }
 

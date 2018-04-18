@@ -41,6 +41,7 @@ signal (int sig, _sig_func_ptr func)
       return (_sig_func_ptr) SIG_ERR;
     }
 
+if (sig == SIGCHLD) small_printf("%s:%d HERE! %p\n", func);
   prev = global_sigs[sig].sa_handler;
   struct sigaction& gs = global_sigs[sig];
   if (gs.sa_flags & _SA_NORESTART)
@@ -235,7 +236,9 @@ _pinfo::kill (siginfo_t& si)
   DWORD this_process_state;
   pid_t this_pid;
 
+small_printf ("_pinfo::kill (%d), pid %d, process_state %y", si.si_signo, pid, process_state);
   sig_dispatch_pending ();
+small_printf ("_pinfo::kill (%d), pid %d, process_state %y", si.si_signo, pid, process_state);
 
   if (exists ())
     {
@@ -274,6 +277,7 @@ _pinfo::kill (siginfo_t& si)
       res = -1;
     }
 
+small_printf ("%d = _pinfo::kill (%d), pid %d, process_state %y", res, si.si_signo, this_pid, this_process_state);
   syscall_printf ("%d = _pinfo::kill (%d), pid %d, process_state %y", res,
 		  si.si_signo, this_pid, this_process_state);
   return res;
@@ -304,6 +308,7 @@ kill0 (pid_t pid, siginfo_t& si)
 	  set_errno (ESRCH);
 	  return -1;
 	}
+small_printf("p->kill %d (pid %d)\n", (int)si.si_signo, (int)pid);
       return p->kill (si);
     }
   return kill_pgrp (-pid, si);
@@ -384,6 +389,7 @@ abort (void)
   /* Flush all streams as per SUSv2.  */
   if (_GLOBAL_REENT->__cleanup)
     _GLOBAL_REENT->__cleanup (_GLOBAL_REENT);
+small_printf("%s:%d do_exit(SIGABRT) (pid %d)\n", __FILE__, __LINE__, (int)GetProcessId(GetCurrentProcess()));
   do_exit (SIGABRT);	/* signal handler didn't exit.  Goodbye. */
 }
 

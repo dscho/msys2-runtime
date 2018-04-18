@@ -233,6 +233,7 @@ fhandler_termios::bg_check (int sig, bool dontsignal)
   /* If the process group of the process is orphaned, return EIO */
   else if (tc ()->is_orphaned_process_group (myself->pgid))
     {
+small_printf ("process group is orphaned\n");
       termios_printf ("process group is orphaned");
       set_errno (EIO);   /* This is an IO error */
       return bg_error;

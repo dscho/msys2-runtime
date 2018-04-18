@@ -436,6 +436,7 @@ sig_dispatch_pending (bool fast)
   /* Non-atomically test for any signals pending and wake up wait_sig if any are
      found.  It's ok if there's a race here since the next call to this function
      should catch it.  */
+//small_printf("sig_dispatch_pending fast: %d %d\n", (int)fast, (int)sigq.pending());
   if (sigq.pending () && &_my_tls != _sig_tls)
     sig_send (myself, fast ? __SIGFLUSHFAST : __SIGFLUSH);
 }
@@ -525,6 +526,7 @@ sig_send (_pinfo *p, siginfo_t& si, _cygtls *tls)
   sigpacket pack;
   bool communing = si.si_signo == __SIGCOMMUNE;
 
+//small_printf("sig_send %d (its_me: %d, pid: %d)\n", (int)si.si_signo, p == NULL, p ? (int)p->pid : -2);
   pack.wakeup = NULL;
   bool wait_for_completion;
   if (!(its_me = p == NULL || p == myself || p == myself_nowait))
@@ -621,6 +623,7 @@ sig_send (_pinfo *p, siginfo_t& si, _cygtls *tls)
 	}
     }
 
+//small_printf ("sendsig %p, pid %d, signal %d, its_me %d\n", sendsig, p->pid, si.si_signo, its_me);
   sigproc_printf ("sendsig %p, pid %d, signal %d, its_me %d", sendsig, p->pid,
 		  si.si_signo, its_me);
 
@@ -1055,6 +1058,7 @@ child_info::proc_retry (HANDLE h)
     case STATUS_ILLEGAL_DLL_PSEUDO_RELOCATION: /* pseudo-reloc.c specific */
       return exit_code;
     case STATUS_CONTROL_C_EXIT:
+small_printf("saw Ctrl+C: %d (pid: %d)\n", (int)saw_ctrl_c(), (int)GetProcessId(GetCurrentProcess()));
       if (saw_ctrl_c ())
 	return EXITCODE_OK;
       /* fall through intentionally */

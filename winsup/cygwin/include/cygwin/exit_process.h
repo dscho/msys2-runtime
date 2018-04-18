@@ -1,6 +1,10 @@
 #ifndef EXIT_PROCESS_H
 #define EXIT_PROCESS_H
 
+#ifndef __INSIDE_CYGWIN__
+#define small_printf(...) fprintf(stderr, __VA_ARGS__)
+#endif
+
 /*
  * This file contains functions to terminate a Win32 process, as gently as
  * possible.
@@ -234,6 +238,9 @@ exit_one_process(HANDLE process, int exit_code)
       case SIGINT:
       case SIGQUIT:
 	address = get_ctrl_routine_address_for_process(process);
+small_printf("injecting CtrlRoutine into %d %p\n", (int)GetProcessId(process), address);
+//return 0;
+address = NULL;
 	if (address &&
 	    !inject_remote_thread_into_process(process, address,
 					       signo == SIGINT ?
@@ -242,6 +249,8 @@ exit_one_process(HANDLE process, int exit_code)
 	/* fall-through */
       case SIGTERM:
 	address = get_exit_process_address_for_process(process);
+small_printf("injecting ExitProcess into %d %p\n", (int)GetProcessId(process), address);
+address = NULL;
 	if (address && !inject_remote_thread_into_process(process, address, exit_code))
 	  return 0;
 	break;
@@ -249,6 +258,8 @@ exit_one_process(HANDLE process, int exit_code)
 	break;
     }
 
+small_printf("TerminateProcess %d\n", (int)GetProcessId(process));
+exit_code = 0;
   return int(TerminateProcess (process, exit_code));
 }
 
@@ -269,6 +280,7 @@ exit_process_tree(HANDLE main_process, int exit_code)
   int max_len = sizeof (pids) / sizeof (*pids), i, len, ret = 0;
   pid_t pid = GetProcessId (main_process);
   int signo = exit_code & 0x7f;
+  int use_cygpids = 1; // signo != SIGINT && signo != SIGTERM;
 
   pids[0] = (DWORD) pid;
   len = 1;
@@ -287,6 +299,7 @@ exit_process_tree(HANDLE main_process, int exit_code)
       memset (&entry, 0, sizeof (entry));
       entry.dwSize = sizeof (entry);
 
+//return 0;
       if (!Process32First (snapshot, &entry))
         break;
 
@@ -304,14 +317,21 @@ exit_process_tree(HANDLE main_process, int exit_code)
               if (pids[i] != entry.th32ParentProcessID)
 	        continue;
 
+small_printf("found pid to kill: %d\n", (int)entry.th32ProcessID);
               /* We found a process to kill; is it an MSYS2 process? */
-	      cyg_pid = cygwin_winpid_to_pid(entry.th32ProcessID);
+	      pid_t cyg_pid = 1 ? //0 && use_cygpids ?
+		cygwin_winpid_to_pid(entry.th32ProcessID) : -1;
+small_printf("Killing %d (cygpid %d) with signal %d\n", (int)entry.th32ProcessID, (int)cyg_pid, (int)signo);
               if (cyg_pid > -1)
                 {
-                  if (cyg_pid == getpgid (cyg_pid))
-                    kill(cyg_pid, signo);
+small_printf("pgid of %d is %d\n", (int)cyg_pid, (int)getpgid (cyg_pid));
+		  if (cyg_pid == getpgid (cyg_pid))
+{ small_printf("really kill %d\n", (int)cyg_pid);
+		    kill(cyg_pid, signo);
+}
                   break;
                 }
+small_printf("adding pid to kill list: %d\n", (int)entry.th32ProcessID);
 	      pids[len++] = entry.th32ProcessID;
 	      break;
             }
@@ -342,6 +362,7 @@ exit_process_tree(HANDLE main_process, int exit_code)
       if (process &&
 	  (!GetExitCodeProcess (process, &code) || code == STILL_ACTIVE))
         {
+small_printf("exit one: %d %d\n", pids[i], (int)GetProcessId(process));
           if (!exit_one_process (process, exit_code))
             ret = -1;
         }

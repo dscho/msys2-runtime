@@ -629,6 +629,7 @@ exception::handle (EXCEPTION_RECORD *e, exception_list *frame, CONTEXT *in,
   static int NO_COPY debugging = 0;
   _cygtls& me = _my_tls;
 
+small_printf("%s:%d pid %d exception\n", __FILE__, __LINE__, (int)GetProcessId(GetCurrentProcess()));
 #ifdef __i386__
   if (me.andreas)
     me.andreas->leave ();	/* Return from a "san" caught fault */
@@ -1110,12 +1111,14 @@ ctrl_c_handler (DWORD type)
       return FALSE;
     }
 
+small_printf("%s:%d (pid %d) in ctrl_c_handler: ctty = %d\n", __FILE__, __LINE__, (int)GetProcessId(GetCurrentProcess()), myself->ctty);
   if (myself->ctty != -1)
     {
       if (type == CTRL_CLOSE_EVENT)
 	{
 	  sig_send (NULL, SIGHUP);
 	  saw_close = true;
+small_printf("%s:%d (pid %d) return FALSE\n", __FILE__, __LINE__, (int)GetProcessId(GetCurrentProcess()));
 	  return FALSE;
 	}
       if (!saw_close && type == CTRL_LOGOFF_EVENT)
@@ -1129,21 +1132,26 @@ ctrl_c_handler (DWORD type)
 	  if (global_sigs[SIGHUP].sa_handler != SIG_DFL)
 	    {
 	      sig_send (myself, SIGHUP);
+small_printf("%s:%d (pid %d) return TRUE\n", __FILE__, __LINE__, (int)GetProcessId(GetCurrentProcess()));
 	      return TRUE;
 	    }
+small_printf("%s:%d (pid %d) return FALSE\n", __FILE__, __LINE__, (int)GetProcessId(GetCurrentProcess()));
 	  return FALSE;
 	}
     }
 
+small_printf("%s:%d (pid %d) maybe return FALSE\n", __FILE__, __LINE__, (int)GetProcessId(GetCurrentProcess()));
   if (ch_spawn.set_saw_ctrl_c ())
     return TRUE;
 
   /* We're only the process group leader when we have a valid pinfo structure.
      If we don't have one, then the parent "stub" will handle the signal. */
+small_printf("%s:%d (pid %d) maybe return TRUE\n", __FILE__, __LINE__, (int)GetProcessId(GetCurrentProcess()));
   if (!pinfo (cygwin_pid (GetCurrentProcessId ())))
     return TRUE;
 
   tty_min *t = cygwin_shared->tty.get_cttyp ();
+small_printf("%s:%d (pid %d) t = %p\n", __FILE__, __LINE__, (int)GetProcessId(GetCurrentProcess()), t);
   /* Ignore this if we're not the process group leader since it should be
      handled *by* the process group leader. */
   if (t && (!have_execed || have_execed_cygwin)
@@ -1159,11 +1167,13 @@ ctrl_c_handler (DWORD type)
 	  && t->ti.c_cc[VINTR] == 3 && t->ti.c_cc[VQUIT] == 3)
 	sig = SIGQUIT;
       t->last_ctrl_c = GetTickCount ();
+small_printf("Sending signal %d to pgrp %d\n", (int)sig, (int)myself->pid);
       t->kill_pgrp (sig);
       t->last_ctrl_c = GetTickCount ();
       return TRUE;
     }
 
+small_printf("%s:%d (pid %d) maybe return FALSE\n", __FILE__, __LINE__, (int)GetProcessId(GetCurrentProcess()));
   return TRUE;
 }
 
@@ -1296,6 +1306,7 @@ extern "C" {
 static void
 signal_exit (int sig, siginfo_t *si, void *)
 {
+small_printf ("%s:%d pid %d exiting due to signal %d", __FILE__, __LINE__, (int)GetProcessId(GetCurrentProcess()), sig);
   debug_printf ("exiting due to signal %d", sig);
   exit_state = ES_SIGNAL_EXIT;
 
@@ -1366,6 +1377,7 @@ signal_exit (int sig, siginfo_t *si, void *)
   SetThreadPriority (GetCurrentThread (), THREAD_PRIORITY_TIME_CRITICAL);
 
   sigproc_printf ("about to call do_exit (%x)", sig);
+small_printf("%s:%d do_exit(%d) (pid %d)\n", __FILE__, __LINE__, sig, (int)GetProcessId(GetCurrentProcess()));
   do_exit (sig);
 }
 } /* extern "C" */
@@ -1411,6 +1423,7 @@ sigpacket::process ()
   struct sigaction& thissig = global_sigs[si.si_signo];
   void *handler = have_execed ? NULL : (void *) thissig.sa_handler;
 
+//if (si.si_signo == SIGINT || si.si_signo == SIGCHLD) small_printf("%s:%d (pid %d) handler for %d: %p (SIG_IGN %p)\n", __FILE__, __LINE__, (int)GetProcessId(GetCurrentProcess()), (int)si.si_signo, handler, (void *)SIG_IGN);
   threadlist_t *tl_entry = NULL;
   _cygtls *tls = NULL;
 
@@ -1493,7 +1506,9 @@ sigpacket::process ()
     }
 
   if (si.si_signo == SIGKILL)
+{ if (si.si_signo == SIGINT || si.si_signo == SIGCHLD) small_printf("%s:%d goto exit_sig\n", __FILE__, __LINE__);
     goto exit_sig;
+}
   if (si.si_signo == SIGSTOP)
     {
       sig_clear (SIGCONT);
@@ -1519,11 +1534,15 @@ sigpacket::process ()
 	  || si.si_signo == SIGTTOU)
 	goto stop;
 
+{ if (si.si_signo == SIGINT || si.si_signo == SIGCHLD) small_printf("%s:%d goto exit_sig\n", __FILE__, __LINE__);
       goto exit_sig;
+}
     }
 
   if (handler == (void *) SIG_ERR)
+{ if (si.si_signo == SIGINT || si.si_signo == SIGCHLD) small_printf("%s:%d goto exit_sig\n", __FILE__, __LINE__);
     goto exit_sig;
+}
 
   goto dosig;
 
@@ -1535,16 +1554,19 @@ stop:
       tls = _main_tls;
     }
   handler = (void *) sig_handle_tty_stop;
+if (si.si_signo == SIGINT || si.si_signo == SIGCHLD) small_printf("%s:%d handler for %d: %p\n", __FILE__, __LINE__, (int)si.si_signo, handler);
   thissig = global_sigs[SIGSTOP];
   goto dosig;
 
 exit_sig:
   handler = (void *) signal_exit;
+if (si.si_signo == SIGINT || si.si_signo == SIGCHLD) small_printf("%s:%d handler for %d: %p\n", __FILE__, __LINE__, (int)si.si_signo, handler);
   thissig.sa_flags |= SA_SIGINFO;
   /* Don't run signal_exit on alternate stack. */
   thissig.sa_flags &= ~SA_ONSTACK;
 
 dosig:
+small_printf("dosig %d (pid %d, %u), have_execed: %d (%d)\n", (int)si.si_signo, (int)GetProcessId(GetCurrentProcess()), (unsigned int)GetProcessId(ch_spawn), (int)have_execed, (int)have_execed_cygwin);
   if (have_execed)
     {
       switch (si.si_signo)
@@ -1561,16 +1583,27 @@ dosig:
           goto done;
         default:
           sigproc_printf ("terminating captive process");
+small_printf("terminating (pid %d, %d)\n", (int)GetProcessId(GetCurrentProcess()), (int)GetProcessId(ch_spawn));
           rc = exit_process_tree (ch_spawn, 128 + (sigExeced = si.si_signo));
-          goto done;
+	  if (si.si_signo == SIGINT)
+		  ch_spawn.set_saw_ctrl_c ();
+small_printf("signal myself exited: %d\n", (int) ch_spawn.signal_myself_exited ());
+	  //ch_spawn.signal_myself_exited ();
+
+small_printf("terminated (pid %d, %d) rc=%d\n", (int)GetProcessId(GetCurrentProcess()), (int)GetProcessId(ch_spawn), rc);
+rc = 1;
+	  goto done;
         }
     }
   /* Dispatch to the appropriate function. */
+//small_printf ("pid %d, %d, signal %d, signal handler %p\n", (int)GetProcessId(GetCurrentProcess()), (int)GetProcessId(ch_spawn), si.si_signo, handler);
+//if (si.si_signo == SIGCHLD) { small_printf("skipping SIGCHLD\n"); rc = 0; goto done; }
   sigproc_printf ("signal %d, signal handler %p", si.si_signo, handler);
   rc = setup_handler (handler, thissig, tls);
 
 done:
   cygheap->unlock_tls (tl_entry);
+//small_printf ("pid %d, %d, returning %d\n", (int)GetProcessId(GetCurrentProcess()), (int)GetProcessId(ch_spawn), rc);
   sigproc_printf ("returning %d", rc);
   return rc;
 
