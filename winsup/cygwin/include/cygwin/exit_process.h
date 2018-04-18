@@ -184,6 +184,7 @@ get_ctrl_routine_address_for_process(HANDLE process)
     {
       ctrl_routine_address =
 	get_address_from_cygwin_console_helper(TRUE, L"CtrlRoutine");
+small_printf("got address for 32-bit: %p\n", ctrl_routine_address);
     }
   return ctrl_routine_address;
 }
@@ -304,7 +305,7 @@ exit_process_tree(HANDLE main_process, int exit_code)
 	      cyg_pid = cygwin_winpid_to_pid(entry.th32ProcessID);
               if (cyg_pid > -1)
                 {
-                  kill(cyg_pid, exit_code);
+                  kill(cyg_pid, (exit_code & 0x7f));
                   continue;
                 }
 	      pids[len++] = entry.th32ProcessID;

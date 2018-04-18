@@ -12,6 +12,10 @@
  * and SymCleanup() functions via GetProcAddr().
  */
 
+#define USE_DBGHELP
+#ifdef USE_DBGHELP
+#include <dbghelp.h>
+#else
 typedef struct {
   ULONG SizeOfStruct;
   ULONG TypeIndex;
@@ -30,6 +34,7 @@ typedef struct {
   WCHAR Name[1];
 } *PSYMBOL_INFOW;
 #define MAX_SYM_NAME 2000
+#endif
 
 /* Avoid fprintf(), as it would try to reference '__getreent' */
 static void
@@ -51,14 +56,17 @@ ctrl_handler(DWORD ctrl_type)
 {
   unsigned short count;
   void *address;
+#ifndef USE_DBGHELP
   HMODULE dbghelp;
-  BOOL (*SymInitialize)(HANDLE, PCSTR, BOOL);
-  BOOL (*SymFromAddrW)(HANDLE, DWORD64, PDWORD64, PSYMBOL_INFOW);
-  BOOL (*SymCleanup)(HANDLE hProcess);
+  WINAPI BOOL (*SymInitialize)(HANDLE, PCSTR, BOOL);
+  WINAPI BOOL (*SymFromAddrW)(HANDLE, DWORD64, PDWORD64, PSYMBOL_INFOW);
+  WINAPI BOOL (*SymCleanup)(HANDLE hProcess);
+#endif
   HANDLE process;
   PSYMBOL_INFOW info;
   DWORD64 displacement;
 
+#ifndef USE_DBGHELP
   if (!(dbghelp = LoadLibraryExA ("dbghelp.dll", NULL,
 				  LOAD_LIBRARY_SEARCH_SYSTEM32)) ||
       !(SymInitialize = (typeof(SymInitialize))
@@ -71,13 +79,14 @@ ctrl_handler(DWORD ctrl_type)
       output (1, "Could not load dbghelp\n");
       return FALSE;
     }
+#endif
 
   count = CaptureStackBackTrace (1l /* skip this function */,
 			         1l /* return only one trace item */,
 				 &address, NULL);
   if (count != 1)
     {
-      output (1, "Could not capture backtrace\n");
+      output (1, "Could not capture backtrace (count = %d) %d\n", (int)count, (int)GetLastError());
       return FALSE;
     }
 
@@ -101,6 +110,7 @@ ctrl_handler(DWORD ctrl_type)
   if (!SymFromAddrW (process, (DWORD64)address, &displacement, info))
     {
       output (1, "Could not get symbol info\n");
+      SymCleanup(process);
       return FALSE;
     }
   output (0, "%p\n", (void *)info->Address);
@@ -160,7 +170,7 @@ main (int argc, char **argv)
 	  return 1;
 	}
 
-      if (!GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0))
+      if (!GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0))
         {
 	  output (1, "Could not simulate Ctrl+Break\n");
 	  return 1;
