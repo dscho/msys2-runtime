@@ -2859,6 +2859,15 @@ fhandler_pty_slave::setup_locale (void)
   char charset[ENCODING_LEN + 1] = "ASCII";
   LCID lcid = get_langinfo (locale, charset);
 
+  /* Special-case the UTF-8 character set */
+  if (strcasecmp (charset, "UTF-8") == 0)
+    {
+      get_ttyp ()->term_code_page = CP_UTF8;
+      SetConsoleCP (CP_UTF8);
+      SetConsoleOutputCP (CP_UTF8);
+      return;
+    }
+
   /* Set console code page from locale */
   if (get_pseudo_console ())
     {
