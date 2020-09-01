@@ -2859,7 +2859,7 @@ fhandler_pty_slave::setup_locale (void)
   char charset[ENCODING_LEN + 1] = "ASCII";
   LCID lcid = get_langinfo (locale, charset);
 
-  /* Set console code page form locale */
+  /* Set console code page from locale */
   if (get_pseudo_console ())
     {
       UINT code_page;
