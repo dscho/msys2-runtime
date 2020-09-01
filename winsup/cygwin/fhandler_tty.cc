@@ -2864,11 +2864,11 @@ fhandler_pty_slave::setup_locale (void)
     {
       UINT code_page;
       if (lcid == 0 || lcid == (LCID) -1)
-	code_page = 20127; /* ASCII */
+	code_page = CP_UTF8; /* Cygwin prefers UTF-8 */
       else if (!GetLocaleInfo (lcid,
 			       LOCALE_IDEFAULTCODEPAGE | LOCALE_RETURN_NUMBER,
 			       (char *) &code_page, sizeof (code_page)))
-	code_page = 20127; /* ASCII */
+	code_page = CP_UTF8; /* Cygwin prefers UTF-8 */
       SetConsoleCP (code_page);
       SetConsoleOutputCP (code_page);
     }
