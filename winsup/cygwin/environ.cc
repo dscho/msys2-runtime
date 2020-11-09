@@ -891,6 +891,43 @@ environ_init (char **envp, int envc)
 #endif
 	  if (p)
 	    parse_options (p);
+
+	  /*
+	   * If MSYSTEM is unset and the PATH does not yet include /usr/bin,
+	   * default to MSYSTEM=MSYS and prefix the PATH with /usr/bin:
+	   */
+	  if (!getenv ("MSYSTEM"))
+	    {
+	      char *path = getenv ("PATH");
+
+	      for (p = path; p; p = strstr(p, ":/usr/bin"))
+	        {
+		  if (strncmp (p, "/usr/bin", 8))
+		    continue;
+		  p += 8;
+		  while (*p == '/')
+		    p++;
+		  if (*p == '\0' || *p == ':')
+		    break;
+		}
+	      if (!p)
+	        {
+		  setenv ("MSYSTEM", "MSYS", 0);
+		  if (!path)
+		    setenv("PATH", "/usr/bin", 1);
+		  else
+		    {
+		      char *buf = (char *) malloc (strlen(path) + 10);
+		      if (buf)
+		        {
+			  strcpy (buf, "/usr/bin:");
+			  strcpy (buf + 9, path);
+			  setenv ("PATH", buf, 1);
+			  free (buf);
+			}
+		    }
+		}
+	    }
 	}
     }
   __except (NO_ERROR)
