@@ -2739,6 +2739,30 @@ check_reparse_point_target (HANDLE h, bool remote, PREPARSE_DATA_BUFFER rp,
       if (check_reparse_point_string (psymbuf))
 	return PATH_SYMLINK | PATH_REP;
     }
+  else if (!remote && rp->ReparseTag == IO_REPARSE_TAG_APPEXECLINK)
+    {
+      /* App execution aliases are commonly used by Windows Store apps. */
+      WCHAR *buf = (WCHAR *)(rp->GenericReparseBuffer.DataBuffer + 4);
+      DWORD size = rp->ReparseDataLength / sizeof(WCHAR), n;
+
+      /*
+         It seems that app execution aliases have a payload of four
+	 NUL-separated wide string: package id, entry point, executable
+	 and application type. We're interested in the executable. */
+      for (int i = 0; i < 3 && size > 0; i++)
+        {
+	  n = wcsnlen (buf, size - 1);
+	  if (i == 2 && n > 0 && n < size)
+	    {
+	      RtlInitCountedUnicodeString (psymbuf, buf, n * sizeof(WCHAR));
+	      return PATH_SYMLINK | PATH_REP;
+	    }
+	  if (i == 2)
+	    break;
+	  buf += n + 1;
+	  size -= n + 1;
+	}
+    }
   else if (rp->ReparseTag == IO_REPARSE_TAG_LX_SYMLINK)
     {
       /* WSL symlink.  Problem: We have to convert the path to UTF-16 for
