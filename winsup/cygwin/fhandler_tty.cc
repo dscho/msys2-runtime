@@ -981,12 +981,6 @@ fhandler_pty_slave::open (int flags, mode_t)
        this behaviour, protection based on attach_mutex does
        not take effect. */
     get_ttyp ()->need_invisible_console = true;
-  else if (_major (myself->ctty) != DEV_CONS_MAJOR
-	   && (!get_ttyp ()->invisible_console_pid
-	       || !pinfo (get_ttyp ()->invisible_console_pid)))
-    /* Create a new invisible console for each pty to isolate
-       CTRL_C_EVENTs between ptys. */
-    get_ttyp ()->need_invisible_console = true;
   else
     {
       acquire_attach_mutex (mutex_timeout);
