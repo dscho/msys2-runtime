@@ -209,7 +209,7 @@ is_console_app (WCHAR *filename)
   char *p = (char *) memmem (buf, n, "PE\0\0", 4);
   if (p && p + id_offset < buf + n)
     return p[id_offset] == '\003'; /* 02: GUI, 03: console */
-  else
+  else if (filename)
     {
       wchar_t *e = wcsrchr (filename, L'.');
       if (e && (wcscasecmp (e, L".bat") == 0 || wcscasecmp (e, L".cmd") == 0))
