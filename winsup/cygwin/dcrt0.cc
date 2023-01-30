@@ -526,25 +526,21 @@ get_cygwin_startup_info ()
 {
   STARTUPINFO si;
 
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   GetStartupInfo (&si);
   child_info *res = (child_info *) si.lpReserved2;
 
   if (si.cbReserved2 < EXEC_MAGIC_SIZE || !res
       || res->intro != PROC_MAGIC_GENERIC || res->magic != CHILD_INFO_MAGIC)
     {
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
       strace.activate (false);
       res = NULL;
     }
   else
     {
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
       if ((res->intro & OPROC_MAGIC_MASK) == OPROC_MAGIC_GENERIC)
 	multiple_cygwin_problem ("proc intro", res->intro, 0);
 
       unsigned should_be_cb = 0;
-small_printf("%s:%d: HERE! (res->type: %d)\n", __FILE__, __LINE__, (int)res->type);
       switch (res->type)
 	{
 	  case _CH_FORK:
@@ -553,7 +549,6 @@ small_printf("%s:%d: HERE! (res->type: %d)\n", __FILE__, __LINE__, (int)res->typ
 	    fallthrough;
 	  case _CH_SPAWN:
 	  case _CH_EXEC:
-small_printf("%s:%d: HERE! (should_be_cb: %d, res->cb: %d, szfu: %d, res->fhandler_union_cb: %d)\n", __FILE__, __LINE__, (int)should_be_cb, (int)res->cb, (int)sizeof(fhandler_union), (int)res->fhandler_union_cb);
 	    if (!should_be_cb)
 	      should_be_cb = sizeof (child_info_spawn);
 	    if (should_be_cb != res->cb)
@@ -561,7 +556,6 @@ small_printf("%s:%d: HERE! (should_be_cb: %d, res->cb: %d, szfu: %d, res->fhandl
 	    else if (sizeof (fhandler_union) != res->fhandler_union_cb)
 	      multiple_cygwin_problem ("fhandler size", res->fhandler_union_cb,
 				       sizeof (fhandler_union));
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
 	    if (res->isstraced ())
 	      {
 		while (!being_debugged ())
@@ -646,19 +640,13 @@ child_info_spawn::handle_spawn ()
 {
   extern void fixup_lockf_after_exec (bool);
   HANDLE h = INVALID_HANDLE_VALUE;
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   if (!dynamically_loaded || get_parent_handle ())
       {
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
 	cygheap_fixup_in_child (true);
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
 	memory_init ();
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
       }
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
 
   cygheap->pid = cygpid;
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
 
   /* Spawned process sets h to INVALID_HANDLE_VALUE to notify
      pinfo::thisproc not to create another pid. */
@@ -666,61 +654,46 @@ small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
       !DuplicateHandle (GetCurrentProcess (), moreinfo->myself_pinfo,
 			GetCurrentProcess (), &h, 0,
 			FALSE, DUPLICATE_SAME_ACCESS | DUPLICATE_CLOSE_SOURCE))
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
     h = (type == _CH_SPAWN) ? INVALID_HANDLE_VALUE : NULL;
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
 
   /* Setup our write end of the process pipe.  Clear the one in the structure.
      The destructor should never be called for this but, it can't hurt to be
      safe. */
   my_wr_proc_pipe = wr_proc_pipe;
   rd_proc_pipe = wr_proc_pipe = NULL;
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
 
   myself.thisproc (h);
   __argc = moreinfo->argc;
   __argv = moreinfo->argv;
   envp = moreinfo->envp;
   envc = moreinfo->envc;
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   if (!dynamically_loaded)
     cygheap->fdtab.fixup_after_exec ();
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   if (__stdin >= 0)
     cygheap->fdtab.move_fd (__stdin, 0);
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   if (__stdout >= 0)
     cygheap->fdtab.move_fd (__stdout, 1);
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   cygheap->user.groups.clear_supp ();
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
 
   /* If we're execing we may have "inherited" a list of children forked by the
      previous process executing under this pid.  Reattach them here so that we
      can wait for them.  */
   if (type == _CH_EXEC)
     reattach_children ();
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
 
   ready (true);
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
 
   if (child_proc_info->parent)
     {
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
       /* We no longer need this handle so close it.  Need to do
 	 this after debug_fixup_after_fork_exec or DEBUGGING handling of
 	 handles might get confused. */
       CloseHandle (child_proc_info->parent);
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
       child_proc_info->parent = NULL;
     }
 
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   signal_fixup_after_exec ();
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   fixup_lockf_after_exec (type == _CH_EXEC);
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
 }
 
 /* Retrieve and store system directory for later use.  Note that the
@@ -754,14 +727,10 @@ dll_crt0_0 ()
   wincap.init ();
   GetModuleFileNameW (NULL, global_progname, NT_MAX_PATH);
   child_proc_info = get_cygwin_startup_info ();
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   init_windows_system_directory ();
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   initial_env ();
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
 
   SetErrorMode (SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
 
   lock_process::init ();
   user_data->impure_ptr = _impure_ptr;
@@ -778,18 +747,13 @@ small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   do_global_ctors (&__CTOR_LIST__, 1);
   cygthread::init ();
 
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   if (!child_proc_info)
     {
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
       setup_cygheap ();
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
       memory_init ();
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
     }
   else
     {
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
       cygwin_user_h = child_proc_info->user_h;
       switch (child_proc_info->type)
 	{
@@ -798,33 +762,25 @@ small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
 	  break;
 	case _CH_SPAWN:
 	case _CH_EXEC:
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
 	  spawn_info->handle_spawn ();
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
 	  break;
 	}
     }
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
 
   user_data->threadinterface->Init ();
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
 
   _main_tls = &_my_tls;
 
   /* Initialize signal processing here, early, in the hopes that the creation
      of a thread early in the process will cause more predictability in memory
      layout for the main thread. */
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   if (!dynamically_loaded)
     sigproc_init ();
 
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   /* See comment preceeding myfault_altstack_handler in exception.cc. */
   AddVectoredContinueHandler (0, myfault_altstack_handler);
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
 
   debug_printf ("finished dll_crt0_0 initialization");
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
 }
 
 static inline void

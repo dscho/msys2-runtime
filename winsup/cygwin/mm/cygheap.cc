@@ -86,43 +86,31 @@ cygheap_fixup_in_child (bool execed)
 {
   SIZE_T commit_size = CYGHEAP_STORAGE_INITIAL - CYGHEAP_STORAGE_LOW;
 
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   if (child_proc_info->cygheap_max > (void *) CYGHEAP_STORAGE_INITIAL)
     commit_size = allocsize (child_proc_info->cygheap_max);
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   cygheap = (init_cygheap *) VirtualAlloc ((LPVOID) CYGHEAP_STORAGE_LOW,
 					   CYGHEAP_STORAGE_HIGH
 					   - CYGHEAP_STORAGE_LOW,
 					   MEM_RESERVE, PAGE_NOACCESS);
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   cygheap = (init_cygheap *) VirtualAlloc ((LPVOID) CYGHEAP_STORAGE_LOW,
 					   commit_size, MEM_COMMIT,
 					   PAGE_READWRITE);
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   if (dynamically_loaded && execed)
     spawn_info->moreinfo->myself_pinfo = NULL;
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   cygheap_max = child_proc_info->cygheap_max;
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   child_copy (child_proc_info->parent, false, child_proc_info->silentfail (),
 	      "cygheap", cygheap, cygheap_max, NULL);
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   cygheap_init ();
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   debug_fixup_after_fork_exec ();
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   if (execed)
     {
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
       cygheap->hooks.next = NULL;
       cygheap->user_heap.base = NULL;		/* We can allocate the heap anywhere */
     }
   /* Walk the allocated memory chain looking for orphaned memory from
      previous execs or forks */
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   for (_cmalloc_entry *rvc = cygheap->chain; rvc; rvc = rvc->prev)
     {
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
       cygheap_entry *ce = (cygheap_entry *) rvc->data;
       if (!rvc->ptr || rvc->b >= NBUCKETS || ce->type <= HEAP_1_START)
 	continue;
@@ -134,9 +122,7 @@ small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
 	_cfree (ce);		/* Marked for freeing in execed child */
       else
 	ce->type += HEAP_1_MAX;	/* Mark for freeing after next exec */
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
     }
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
 }
 
 void
@@ -299,40 +285,29 @@ static const uint32_t bucket_val[NBUCKETS] = {
 void
 cygheap_init ()
 {
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   cygheap_protect.init ("cygheap_protect");
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   if (cygheap == &cygheap_dummy)
     {
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
       cygheap = (init_cygheap *) VirtualAlloc ((LPVOID) CYGHEAP_STORAGE_LOW,
 					       CYGHEAP_STORAGE_HIGH
 					       - CYGHEAP_STORAGE_LOW,
 					       MEM_RESERVE, PAGE_NOACCESS);
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
       cygheap = (init_cygheap *) VirtualAlloc ((LPVOID) CYGHEAP_STORAGE_LOW,
 					       CYGHEAP_STORAGE_INITIAL
 					       - CYGHEAP_STORAGE_LOW,
 					       MEM_COMMIT, PAGE_READWRITE);
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
       cygheap_max = (char *) cygheap + sizeof (*cygheap);
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
       /* Default locale settings. */
       cygheap->locale.mbtowc = __utf8_mbtowc;
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
       /* Set umask to a sane default. */
       cygheap->umask = 022;
       cygheap->rlim_core = RLIM_INFINITY;
     }
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   if (!cygheap->fdtab)
     cygheap->fdtab.init ();
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   if (!cygheap->sigs)
     sigalloc ();
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   cygheap->init_tls_list ();
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
 }
 
 /* Initial Cygwin heap setup.
@@ -390,45 +365,33 @@ _cmalloc (unsigned size)
   _cmalloc_entry *rvc;
   unsigned b;
 
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   /* Calculate "bit bucket". */
   for (b = 1; b < NBUCKETS && bucket_val[b] < size; b++)
     continue;
   if (b >= NBUCKETS)
     return NULL;
 
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   cygheap_protect.acquire ();
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   if (cygheap->buckets[b])
     {
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
       rvc = (_cmalloc_entry *) cygheap->buckets[b];
       cygheap->buckets[b] = rvc->ptr;
       rvc->b = b;
     }
   else
     {
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
       rvc = (_cmalloc_entry *) _csbrk (bucket_val[b] + sizeof (_cmalloc_entry));
       if (!rvc)
 	{
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
 	  cygheap_protect.release ();
 	  return NULL;
 	}
 
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
       rvc->b = b;
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
       rvc->prev = cygheap->chain;
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
       cygheap->chain = rvc;
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
     }
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   cygheap_protect.release ();
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   return rvc->data;
 }
 
@@ -473,23 +436,19 @@ _crealloc (void *ptr, unsigned size)
 inline static void *
 creturn (cygheap_types x, cygheap_entry * c, unsigned len, const char *fn = NULL)
 {
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   if (c)
     /* nothing to do */;
   else if (fn)
     api_fatal ("%s would have returned NULL", fn);
   else
     {
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
       set_errno (ENOMEM);
       return NULL;
     }
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   c->type = x;
   char *cend = ((char *) c + sizeof (*c) + len);
   if (cygheap_max < cend)
     cygheap_max = cend;
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   return (void *) c->data;
 }
 
@@ -558,26 +517,21 @@ ccalloc (cygheap_types x, size_t n, size_t size, const char *fn)
 {
   cygheap_entry *c;
   n *= size;
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   c = (cygheap_entry *) _cmalloc (sizeof_cygheap (n));
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   if (c)
     memset (c->data, 0, n);
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   return creturn (x, c, n, fn);
 }
 
 extern "C" void *
 ccalloc (cygheap_types x, size_t n, size_t size)
 {
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   return ccalloc (x, n, size, NULL);
 }
 
 extern "C" void *
 ccalloc_abort (cygheap_types x, size_t n, size_t size)
 {
-small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   return ccalloc (x, n, size, "ccalloc");
 }
 
