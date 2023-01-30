@@ -123,9 +123,12 @@ static NO_COPY pending_signals sigq;
 void
 sigalloc ()
 {
+small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   cygheap->sigs = global_sigs =
     (struct sigaction *) ccalloc_abort (HEAP_SIGS, _NSIG, sizeof (struct sigaction));
+small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
   global_sigs[SIGSTOP].sa_flags = SA_RESTART | SA_NODEFER;
+small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
 }
 
 void

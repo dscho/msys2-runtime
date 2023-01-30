@@ -424,12 +424,14 @@ cygwin_internal (cygwin_getinfo_types t, ...)
       case CW_ARGV:
 	{
 	  child_info_spawn *ci = (child_info_spawn *) get_cygwin_startup_info ();
+small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
 	  res = (uintptr_t) (ci ? ci->moreinfo->argv : NULL);
 	}
 	break;
       case CW_ENVP:
 	{
 	  child_info_spawn *ci = (child_info_spawn *) get_cygwin_startup_info ();
+small_printf("%s:%d: HERE!\n", __FILE__, __LINE__);
 	  res = (uintptr_t) (ci ? ci->moreinfo->envp : NULL);
 	}
 	break;
