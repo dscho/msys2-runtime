@@ -1166,6 +1166,7 @@ fhandler_pty_slave::reset_switch_to_nat_pipe (void)
 		{
 		  WaitForSingleObject (input_mutex, mutex_timeout);
 		  acquire_attach_mutex (mutex_timeout);
+		  LOGPTYSW ("pty%d to_cyg\n", get_minor ());
 		  transfer_input (tty::to_cyg, get_handle_nat (), get_ttyp (),
 				  input_available_event);
 		  release_attach_mutex ();
@@ -1319,6 +1320,7 @@ fhandler_pty_slave::mask_switch_to_nat_pipe (bool mask, bool xfer)
       if (mask && get_ttyp ()->pty_input_state_eq (tty::to_nat))
 	{
 	  acquire_attach_mutex (mutex_timeout);
+	  LOGPTYSW ("pty%d to_cyg\n", get_minor ());
 	  transfer_input (tty::to_cyg, get_handle_nat (), get_ttyp (),
 			  input_available_event);
 	  release_attach_mutex ();
@@ -1326,6 +1328,7 @@ fhandler_pty_slave::mask_switch_to_nat_pipe (bool mask, bool xfer)
       else if (!mask && get_ttyp ()->pty_input_state_eq (tty::to_cyg))
 	{
 	  acquire_attach_mutex (mutex_timeout);
+	  LOGPTYSW ("pty%d to_nat\n", get_minor ());
 	  transfer_input (tty::to_nat, get_handle (), get_ttyp (),
 			  input_available_event);
 	  release_attach_mutex ();
@@ -1353,6 +1356,9 @@ fhandler_pty_common::to_be_read_from_nat_pipe (void)
     /* GDB may set invalid process group for non-cygwin process. */
     return true;
 
+  if (get_ttyp ()->pty_input_state == tty::to_nat
+      && !get_ttyp ()->nat_fg (get_ttyp ()->getpgid ()))
+    LOGPTYSW ("to_nat when !to_be_read_from_pcon()\n");
   return get_ttyp ()->nat_fg (get_ttyp ()->getpgid ());
 }
 
@@ -1380,7 +1386,12 @@ fhandler_pty_slave::read (void *ptr, size_t& len)
   push_process_state process_state (PID_TTYIN);
 
   if (ptr) /* Indicating not tcflush(). */
-    mask_switch_to_nat_pipe (true, true);
+    {
+      if (get_ttyp ()->switch_to_nat_pipe
+	  && get_ttyp ()->pty_input_state_eq (tty::to_nat))
+	LOGPTYSW ("pty%d mask(true, true)\n", get_minor ());
+      mask_switch_to_nat_pipe (true, true);
+    }
 
   if (is_nonblocking () || !ptr) /* Indicating tcflush(). */
     time_to_wait = 0;
@@ -1498,6 +1509,9 @@ wait_retry:
       if (ptr && !bytes_in_pipe && !vmin && !time_to_wait)
 	{
 	  ReleaseMutex (input_mutex);
+	  if (get_ttyp ()->switch_to_nat_pipe
+	      && get_ttyp ()->pty_input_state_eq (tty::to_cyg))
+	    LOGPTYSW ("pty%d mask(false, false)\n", get_minor ());
 	  mask_switch_to_nat_pipe (false, false);
 	  len = (size_t) bytes_in_pipe;
 	  return;
@@ -1606,6 +1620,10 @@ out:
   if (ptr0)
     { /* Not tcflush() */
       bool saw_eol = totalread > 0 && strchr ("\r\n", ptr0[totalread -1]);
+      if (get_ttyp ()->switch_to_nat_pipe
+	  && get_ttyp ()->pty_input_state_eq (tty::to_cyg))
+	LOGPTYSW ("pty%d mask(false, %s)\n", get_minor (),
+		  (saw_eol || len == 0) ? "true" : "false");
       mask_switch_to_nat_pipe (false, saw_eol || len == 0);
     }
 }
@@ -2259,6 +2277,7 @@ fhandler_pty_master::write (const void *ptr, size_t len)
 	      if (get_readahead_valid ())
 		accept_input ();
 	      acquire_attach_mutex (mutex_timeout);
+	      LOGPTYSW ("pty%d to_nat\n", get_minor ());
 	      fhandler_pty_slave::transfer_input (tty::to_nat, from_master,
 						  get_ttyp (),
 						  input_available_event);
@@ -2321,6 +2340,7 @@ fhandler_pty_master::write (const void *ptr, size_t len)
       && get_ttyp ()->pty_input_state == tty::to_cyg)
     {
       acquire_attach_mutex (mutex_timeout);
+      LOGPTYSW ("pty%d to_nat\n", get_minor ());
       fhandler_pty_slave::transfer_input (tty::to_nat, from_master,
 					  get_ttyp (), input_available_event);
       release_attach_mutex ();
@@ -4159,6 +4179,7 @@ fhandler_pty_slave::setup_for_non_cygwin_app (bool nopcon,
     {
       WaitForSingleObject (input_mutex, mutex_timeout);
       acquire_attach_mutex (mutex_timeout);
+      LOGPTYSW ("pty%d to_nat\n", get_minor ());
       transfer_input (tty::to_nat, get_handle (), get_ttyp (),
 		      input_available_event);
       release_attach_mutex ();
@@ -4184,6 +4205,7 @@ fhandler_pty_slave::cleanup_for_non_cygwin_app (handle_set_t *p, tty *ttyp,
     {
       WaitForSingleObject (p->input_mutex, mutex_timeout);
       acquire_attach_mutex (mutex_timeout);
+      LOGPTYSW ("pty%d to_cyg\n", ttyp->get_minor ());
       transfer_input (tty::to_cyg, p->from_master_nat, ttyp,
 		      p->input_available_event);
       release_attach_mutex ();
@@ -4209,6 +4231,7 @@ fhandler_pty_slave::setpgid_aux (pid_t pid)
     {
       WaitForSingleObject (input_mutex, mutex_timeout);
       acquire_attach_mutex (mutex_timeout);
+      LOGPTYSW ("pty%d to_nat\n", get_minor ());
       transfer_input (tty::to_nat, get_handle (), get_ttyp (),
 		      input_available_event);
       release_attach_mutex ();
@@ -4236,6 +4259,7 @@ fhandler_pty_slave::setpgid_aux (pid_t pid)
 	}
       else
 	acquire_attach_mutex (mutex_timeout);
+      LOGPTYSW ("pty%d to_cyg\n", get_minor ());
       transfer_input (tty::to_cyg, from, get_ttyp (), input_available_event);
       if (attach_restore)
 	resume_from_temporarily_attach (resume_pid);

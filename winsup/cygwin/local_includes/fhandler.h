@@ -14,6 +14,7 @@ details. */
 #include <cygwin/_socketflags.h>
 #include <cygwin/_ucred.h>
 #include <sys/un.h>
+#include <stdio.h>
 
 /* It appears that 64K is the block size used for buffered I/O on NT.
    Using this blocksize in read/write calls in the application results
@@ -3378,3 +3379,12 @@ typedef union
   char __virtual[sizeof (fhandler_virtual)];
   char __windows[sizeof (fhandler_windows)];
 } fhandler_union;
+
+#define LOGPTYSW(...) if (getenv ("LOGPTYSW")) {\
+  FILE *f = fopen(getenv ("LOGPTYSW"),"a");\
+  if (f) {\
+    fprintf(f, "%10d %ls(%d) %s:%d: ", GetTickCount(), myself->progname, myself->pid, __PRETTY_FUNCTION__, __LINE__);\
+    fprintf(f, __VA_ARGS__);\
+    fclose(f);\
+  }\
+}

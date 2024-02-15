@@ -174,6 +174,7 @@ public:
   void wait_fwd ();
   bool pty_input_state_eq (xfer_dir x) { return pty_input_state == x; }
   bool nat_fg (pid_t pgid);
+  bool get_switch_to_nat_pipe () {return switch_to_nat_pipe;}
   friend class fhandler_pty_common;
   friend class fhandler_pty_master;
   friend class fhandler_pty_slave;
