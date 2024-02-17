@@ -1251,6 +1251,7 @@ fhandler_pty_slave::reset_switch_to_nat_pipe (void)
       return;
     }
   /* Clean up nat pipe state */
+  LOGPTYSW ("pty%d reset to to_cyg\n", get_minor ());
   get_ttyp ()->pty_input_state = tty::to_cyg;
   get_ttyp ()->nat_pipe_owner_pid = 0;
   get_ttyp ()->switch_to_nat_pipe = false;
