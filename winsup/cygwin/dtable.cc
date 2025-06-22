@@ -410,8 +410,9 @@ dtable::init_std_file_from_handle (int fd, HANDLE handle)
 	{
 	  fhandler_pipe *fhp = (fhandler_pipe *) fh;
 	  fhp->set_pipe_buf_size ();
-	  /* Set pipe always blocking */
-	  fhp->set_pipe_non_blocking (false);
+	  /* Set read pipe always to nonblocking */
+	  fhp->set_pipe_non_blocking (fhp->get_device () == FH_PIPER ?
+				      true : fhp->is_nonblocking ());
 	}
 
       if (!fh->open_setup (openflags))
