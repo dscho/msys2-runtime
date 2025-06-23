@@ -9,3 +9,7 @@ Fixes:
 
 - Fix creating native symlinks to `..` (it used to target `../../<dir>`
   instead).
+
+- Fix yet another issue with non-blocking pipes that could lead to
+  dead-locks e.g. when writing large amounts of data to a non-Cygwin
+  process.
