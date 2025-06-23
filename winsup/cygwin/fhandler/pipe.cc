@@ -542,6 +542,8 @@ fhandler_pipe_fifo::raw_write (const void *ptr, size_t len)
 
   if (len <= (size_t) avail)
     chunk = len;
+  else if (is_nonblocking ())
+    chunk = len = avail;
   else
     chunk = avail;
 
