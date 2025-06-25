@@ -700,7 +700,7 @@ fhandler_pipe_fifo::raw_write (const void *ptr, size_t len)
       else
 	__seterrno_from_nt_status (status);
 
-      if (nbytes_now == 0 || short_write_once
+      if (nbytes_now == 0 || short_write_once || is_nonblocking ()
 	  || status == STATUS_THREAD_SIGNALED)
 	break;
     }
