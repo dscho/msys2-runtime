@@ -982,6 +982,50 @@ err_no_msg:
 bool
 fhandler_pty_slave::open_setup (int flags)
 {
+  if (get_ttyp ()->pcon_activated)
+    {
+      /* When a Cygwin process opens a pty slave whose pseudo console has
+	 already been activated (typically as a grandchild of a non-Cygwin
+	 ancestor that owns the pcon), replace the per-process from_master_nat
+	 / to_master_nat handles that open() just installed with handles
+	 pointing at the pcon owner's input/output buffers.  Without this,
+	 when this slave eventually closes, its duped ends of the cygwin
+	 master-side native pipe would go away and any non-Cygwin foreground
+	 application reading the pcon (e.g. cmd.exe after a Ctrl-C kills its
+	 Cygwin child) would silently lose its input.  */
+      HANDLE pcon_owner = OpenProcess (PROCESS_DUP_HANDLE, FALSE,
+				       get_ttyp ()->nat_pipe_owner_pid);
+      if (pcon_owner)
+	{
+	  HANDLE new_in = NULL, new_out = NULL;
+	  bool ok_in = DuplicateHandle (pcon_owner, get_ttyp ()->h_pcon_in,
+					GetCurrentProcess (), &new_in,
+					0, TRUE, DUPLICATE_SAME_ACCESS);
+	  bool ok_out = DuplicateHandle (pcon_owner, get_ttyp ()->h_pcon_out,
+					 GetCurrentProcess (), &new_out,
+					 0, TRUE, DUPLICATE_SAME_ACCESS);
+	  if (ok_in && ok_out)
+	    {
+	      /* Close the orig handles before reassigning, mirroring what
+		 replace_nat_handles() does; we cannot call that helper here
+		 because this fhandler is not yet registered in the fd table
+		 nor as cygheap->ctty, so it would close the orig handles
+		 without first updating our own io_handle_nat slots.  */
+	      CloseHandle (get_handle_nat ());
+	      CloseHandle (get_output_handle_nat ());
+	      set_handle_nat (new_in);
+	      set_output_handle_nat (new_out);
+	    }
+	  else
+	    {
+	      if (new_in)
+		CloseHandle (new_in);
+	      if (new_out)
+		CloseHandle (new_out);
+	    }
+	  CloseHandle (pcon_owner);
+	}
+    }
   set_flags ((flags & ~O_TEXT) | O_BINARY);
   myself->set_ctty (this, flags);
   report_tty_counts (this, "opened", "");
