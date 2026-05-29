@@ -531,6 +531,17 @@ fhandler_pty_master::discard_input ()
   if (!get_ttyp ()->pcon_activated)
     while (::bytes_available (bytes_in_pipe, from_master_nat) && bytes_in_pipe)
       ReadFile (from_master_nat, buf, sizeof(buf), &n, NULL);
+  else if (h_pcon_in_dupped)
+    {
+      DWORD target_pid = get_ttyp ()->nat_pipe_owner_pid;
+      if (process_alive (target_pid))
+	{
+	  DWORD resume_pid =
+	    fhandler_pty_common::attach_console_temporarily (target_pid);
+	  FlushConsoleInputBuffer (h_pcon_in_dupped);
+	  fhandler_pty_common::resume_from_temporarily_attach (resume_pid);
+	}
+    }
   get_ttyp ()->discard_input = true;
   ReleaseMutex (input_mutex);
 }
