@@ -2527,6 +2527,7 @@ class fhandler_pty_slave: public fhandler_pty_common
   void setpgid_aux (pid_t pid);
   static void release_ownership_of_nat_pipe (tty *ttyp, fhandler_termios *fh);
   void replace_nat_handles (HANDLE new_input, HANDLE new_output);
+  void req_fixup_pcon_state (void);
 };
 
 #define __ptsname(buf, unit) __small_sprintf ((buf), "/dev/pty%d", (unit))
@@ -2601,6 +2602,7 @@ public:
   int tcgetpgrp ();
   void flush_to_slave ();
   void discard_input ();
+  void fixup_pcon_cursor_position (int x, int y);
   void acquire_input_mutex_if_necessary (DWORD ms)
   {
     WaitForSingleObject (input_mutex, ms);

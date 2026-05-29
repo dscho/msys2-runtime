@@ -288,6 +288,8 @@ tty::init ()
   previous_output_code_page = 0;
   master_is_running_as_service = false;
   req_xfer_input = false;
+  req_fixup_pcon_cur_pos = false;
+  cursor_sync_needed = false;
   pty_input_state = to_cyg;
   last_sig = 0;
   discard_input = false;

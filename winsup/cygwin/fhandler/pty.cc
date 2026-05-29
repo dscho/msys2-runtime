@@ -223,6 +223,119 @@ atexit_func (void)
     }
 }
 
+void
+fhandler_pty_slave::req_fixup_pcon_state (void)
+{
+  /* Mark our intent to sync.  If anything below fails we re-arm the
+     flag so a later cleanup will retry; if the master completes the
+     round-trip the cursor is in sync and the flag stays false. */
+  get_ttyp ()->cursor_sync_needed = false;
+
+  /* Bound every wait so neither a stuck previous requester nor a
+     non-responding master can block our exit indefinitely.  Sleep(1)
+     (instead of yield()) keeps these loops from burning a core.
+     WAIT_ABANDONED counts as acquired (the previous holder died); only
+     WAIT_TIMEOUT/_FAILED means we did not get the mutex. */
+  ULONGLONG deadline = GetTickCount64 () + 3000;
+  while (true)
+    {
+      DWORD w = WaitForSingleObject (input_mutex, mutex_timeout);
+      if (w != WAIT_OBJECT_0 && w != WAIT_ABANDONED)
+	{
+	  /* Slot still pending; let a later cleanup retry. */
+	  get_ttyp ()->cursor_sync_needed = true;
+	  return;
+	}
+      if (!get_ttyp ()->pcon_start_pid)
+	break;
+      /* Another request is in flight. */
+      ReleaseMutex (input_mutex);
+      if (GetTickCount64 () > deadline)
+	{
+	  get_ttyp ()->cursor_sync_needed = true;
+	  return;
+	}
+      Sleep (1);
+    }
+
+  /* req_fixup_pcon_cur_pos indicates that this "ESC[6n" is for fixing
+     up the cursor position, not for any of the other purposes. */
+  get_ttyp ()->req_fixup_pcon_cur_pos = true;
+  get_ttyp ()->req_xfer_input = true; /* indicates that this "ESC[6n"
+					 is just for transfer input */
+  get_ttyp ()->pcon_start = true;
+  get_ttyp ()->pcon_start_pid = myself->pid;
+  ReleaseMutex (input_mutex);
+
+  /* WriteFile is intentionally outside input_mutex: the mutex protects
+     the check-then-set of pcon_start_pid (so two slaves cannot both
+     install requests), but the pipe write itself must not stall input
+     handling. */
+  DWORD n;
+  bool wrote = !!WriteFile (get_output_handle (), "\033[6n", 4, &n, NULL);
+
+  if (wrote)
+    {
+      deadline = GetTickCount64 () + 3000;
+      while (get_ttyp ()->pcon_start_pid && GetTickCount64 () <= deadline)
+	/* wait for completion of fixing-up in master::write(). */
+	Sleep (1);
+      if (get_ttyp ()->pcon_start_pid != (pid_t) myself->pid)
+	/* Master processed our request normally.  Cursor is in sync. */
+	return;
+    }
+
+  /* Either WriteFile failed or the master never responded before the
+     deadline.  Reacquire input_mutex and clear only if our slot is
+     still ours, so we don't stomp on a later requester that may have
+     taken the slot in the meantime. */
+  DWORD w = WaitForSingleObject (input_mutex, mutex_timeout);
+  if (w == WAIT_OBJECT_0 || w == WAIT_ABANDONED)
+    {
+      if (get_ttyp ()->pcon_start_pid == (pid_t) myself->pid)
+	{
+	  get_ttyp ()->req_fixup_pcon_cur_pos = false;
+	  get_ttyp ()->req_xfer_input = false;
+	  get_ttyp ()->pcon_start = false;
+	  get_ttyp ()->pcon_start_pid = 0;
+	}
+      ReleaseMutex (input_mutex);
+    }
+  /* The cursor may still be out of sync; let a later cleanup retry. */
+  get_ttyp ()->cursor_sync_needed = true;
+}
+
+void
+fhandler_pty_master::fixup_pcon_cursor_position (int x, int y)
+{
+  /* 1-based terminal coordinates, clamped into the SHORT range that
+     SetConsoleCursorPosition() accepts.  A malformed reply (zero or
+     out-of-range) is silently ignored rather than producing a wrapped
+     negative coordinate. */
+  if (x < 1 || y < 1 || x > SHRT_MAX || y > SHRT_MAX)
+    return;
+  DWORD target_pid = get_ttyp ()->nat_pipe_owner_pid;
+  HANDLE pcon_owner = OpenProcess (PROCESS_DUP_HANDLE, FALSE, target_pid);
+  if (!pcon_owner)
+    /* The nat-pipe owner is gone; nothing to sync to. */
+    return;
+  HANDLE h_pcon_out = NULL;
+  if (!DuplicateHandle (pcon_owner, get_ttyp ()->h_pcon_out,
+			GetCurrentProcess (), &h_pcon_out,
+			0, TRUE, DUPLICATE_SAME_ACCESS))
+    {
+      CloseHandle (pcon_owner);
+      return;
+    }
+  CloseHandle (pcon_owner);
+  DWORD resume_pid =
+    fhandler_pty_common::attach_console_temporarily (target_pid);
+  COORD cur_pos = {(SHORT) (x - 1), (SHORT) (y - 1)};
+  SetConsoleCursorPosition (h_pcon_out, cur_pos);
+  fhandler_pty_common::resume_from_temporarily_attach (resume_pid);
+  CloseHandle (h_pcon_out);
+}
+
 #define DEF_HOOK(name) static __typeof__ (name) *name##_Orig
 /* CreateProcess() is hooked for GDB etc. */
 DEF_HOOK (CreateProcessA);
@@ -1035,6 +1148,11 @@ fhandler_pty_slave::open_setup (int flags)
 void
 fhandler_pty_slave::cleanup ()
 {
+  if (get_ttyp ()->pcon_activated
+      && get_ttyp ()->getpgid () == myself->pgid
+      && get_ttyp ()->cursor_sync_needed)
+    req_fixup_pcon_state ();
+
   /* This used to always call fhandler_pty_common::close when we were execing
      but that caused multiple closes of the handles associated with this pty.
      Since close_all_files is not called until after the cygwin process has
@@ -2239,6 +2357,9 @@ fhandler_pty_master::write (const void *ptr, size_t len)
       static DWORD wp_tid = 0;
 
       DWORD n;
+      bool do_fixup_pcon_cur_pos = false;
+      int fixup_pcon_cur_pos_x = 0;
+      int fixup_pcon_cur_pos_y = 0;
       WaitForSingleObject (input_mutex, mutex_timeout);
       len = 0;
       for (size_t i = 0; i < orig_len; i++)
@@ -2271,10 +2392,29 @@ fhandler_pty_master::write (const void *ptr, size_t len)
 	    state = 2;
 	  if (state == 2)
 	    {
+	      /* req_fixup_pcon_cur_pos is set by a slave's
+		 req_fixup_pcon_state() to mean "this CSI6n round-trip is
+		 just to teach pcon where the terminal's cursor actually
+		 is".  We swallow the response (the slave is in cleanup
+		 and does not need it) and remember the parsed position;
+		 the actual SetConsoleCursorPosition is deferred until
+		 after we release input_mutex below, to keep this critical
+		 section short. */
+	      if (get_ttyp ()->req_fixup_pcon_cur_pos)
+		{
+		  int x, y;
+		  if (sscanf (wpbuf, "\033[%d;%dR", &y, &x) == 2)
+		    {
+		      fixup_pcon_cur_pos_x = x;
+		      fixup_pcon_cur_pos_y = y;
+		      do_fixup_pcon_cur_pos = true;
+		    }
+		  get_ttyp ()->req_fixup_pcon_cur_pos = false;
+		}
 	      /* req_xfer_input is true if "ESC[6n" was sent just for
 		 triggering transfer_input() in master. In this case,
 		 the response sequence should not be written. */
-	      if (!get_ttyp ()->req_xfer_input)
+	      else if (!get_ttyp ()->req_xfer_input)
 		WriteFile (to_slave_nat, wpbuf, ixput, &n, NULL);
 	      ixput = 0;
 	      state = 0;
@@ -2285,6 +2425,13 @@ fhandler_pty_master::write (const void *ptr, size_t len)
 	    }
 	}
       ReleaseMutex (input_mutex);
+
+      /* Sync pcon's cursor with the terminal's outside of input_mutex:
+	 attach_console_temporarily() takes attach_mutex internally, and
+	 we don't want to hold both at once. */
+      if (do_fixup_pcon_cur_pos)
+	fixup_pcon_cursor_position (fixup_pcon_cur_pos_x,
+				    fixup_pcon_cur_pos_y);
 
       if (!get_ttyp ()->pcon_start)
 	{ /* Pseudo console initialization has been done in above code. */
@@ -2836,6 +2983,11 @@ wait_event:
 	case WAIT_OBJECT_0:
 	  GetOverlappedResult (p->from_slave_nat, &ov, &rlen, FALSE);
 	  ResetEvent (ov.hEvent);
+	  /* Any pcon output observed here may have moved pcon's internal
+	     cursor relative to the terminal emulator's cursor, so arm the
+	     drift flag for the next slave cleanup. */
+	  if (rlen > 0 && p->ttyp->pcon_activated)
+	    p->ttyp->cursor_sync_needed = true;
 	  break;
 	case WAIT_OBJECT_0 + 1:
 	  p->master->apply_line_edit_to_transferred_input ();

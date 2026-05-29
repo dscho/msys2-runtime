@@ -136,6 +136,8 @@ private:
   UINT previous_output_code_page;
   bool master_is_running_as_service;
   bool req_xfer_input;
+  bool req_fixup_pcon_cur_pos;
+  bool cursor_sync_needed;
   xfer_dir pty_input_state;
   bool discard_input;
   bool stop_fwd_thread;
