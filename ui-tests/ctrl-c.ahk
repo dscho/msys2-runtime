@@ -27,6 +27,8 @@ CloseWindow := true
 WinMove 0, 0
 Info 'Moved window to top left (so that the bottom is not cut off)'
 
+WaitForRegExInWindowsTerminal('PS [A-Z]:.*>[ `n`r]*$', 'Timed out waiting for PowerShell to start', 'PowerShell prompt appeared', 30000)
+
 ; sleep test
 Sleep 1500
 ; The `:;` is needed to force Git to call this via the shell, otherwise `/usr/bin/` would not resolve.
