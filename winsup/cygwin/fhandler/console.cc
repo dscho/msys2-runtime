@@ -1702,13 +1702,18 @@ fhandler_console::discard_key_events (size_t n)
 {
   DWORD discarded = 0;
   INPUT_RECORD input_rec[INREC_SIZE];
-  DWORD n1 = min (INREC_SIZE, n);
   while (n)
     {
-      ReadConsoleInputW (get_handle (), input_rec, n1, &n1);
+      /* Only ever consume events that are actually queued, so this never
+	 blocks waiting for the user's next keystroke. */
+      DWORD avail = 0;
+      if (!GetNumberOfConsoleInputEvents (get_handle (), &avail) || !avail)
+	break;
+      DWORD n1 = min (min ((DWORD) INREC_SIZE, (DWORD) n), avail);
+      if (!ReadConsoleInputW (get_handle (), input_rec, n1, &n1) || !n1)
+	break;
       n -= n1;
       discarded += n1;
-      n1 = min (INREC_SIZE, n);
     }
   con.num_processed -= min (con.num_processed, discarded);
 }
