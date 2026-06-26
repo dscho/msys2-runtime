@@ -120,6 +120,7 @@ private:
   pid_t pcon_start_pid;
   bool switch_to_nat_pipe;
   DWORD nat_pipe_owner_pid;
+  HANDLE pcon_handle_ready_event;
   UINT term_code_page;
   ULONGLONG fwd_last_time;
   bool fwd_not_empty;
@@ -139,6 +140,7 @@ private:
   xfer_dir pty_input_state;
   bool discard_input;
   bool stop_fwd_thread;
+  bool req_fixup_pcon_cur_pos;
 
 public:
   HANDLE from_master_nat () const { return _from_master_nat; }
@@ -175,6 +177,10 @@ public:
   void wait_fwd ();
   bool pty_input_state_eq (xfer_dir x) { return pty_input_state == x; }
   bool nat_fg (pid_t pgid);
+  bool has_active_pcon () const
+    { return pcon_activated && switch_to_nat_pipe; }
+  bool has_pcon_and_owner (DWORD pid) const
+    { return pcon_activated && switch_to_nat_pipe && nat_pipe_owner_pid == pid; }
   friend class fhandler_pty_common;
   friend class fhandler_pty_master;
   friend class fhandler_pty_slave;
@@ -193,6 +199,7 @@ public:
   int connect (int);
   void init ();
   tty_min *get_cttyp ();
+  int find_pcon_pty ();
   int attach (int n);
   static void init_session ();
   friend class lock_ttys;
