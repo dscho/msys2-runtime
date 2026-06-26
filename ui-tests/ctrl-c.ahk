@@ -91,6 +91,24 @@ if (openSSHPath != '' and FileExist(openSSHPath . '\sshd.exe')) {
             ExitWithError 'Could not add admin read permission from ' . path . ': ' A_LastError
     }
 
+    WaitForSshd() {
+        deadline := A_TickCount + 60000
+        while true {
+            if FileExist('sshd.pid') {
+                content := ''
+                try
+                    content := Trim(FileRead('sshd.pid'), ' `t`r`n')
+                if content != '' {
+                    Info('sshd is accepting connections (PID ' . content . ')')
+                    return
+                }
+            }
+            if A_TickCount > deadline
+                ExitWithError 'sshd did not write its PidFile within 60 seconds'
+            Sleep 500
+        }
+    }
+
     ; Set up SSH server
     Info('Generating host key')
     RunWait('git -c alias.c="!ssh-keygen -b 4096 -f ssh_host_rsa_key -N \"\"" c', '', 'Hide')
@@ -106,9 +124,11 @@ if (openSSHPath != '' and FileExist(openSSHPath . '\sshd.exe')) {
     AdjustPermissions('id_rsa.pub')
     FileAppend('Port 2322`n' .
         'HostKey "' . workTree . '\ssh_host_rsa_key"`n' .
-        'AuthorizedKeysFile "' . workTree . '\id_rsa.pub"`n',
+        'AuthorizedKeysFile "' . workTree . '\id_rsa.pub"`n' .
+        'LogLevel VERBOSE`n' .
+        'PidFile "' . workTree . '\sshd.pid"`n',
         'sshd_config')
-    sshdOptions := '-f "' . workTree . '\sshd_config" -D -d -d -d -E sshd.log'
+    sshdOptions := '-f "' . workTree . '\sshd_config" -D -E "' . workTree . '\sshd.log"'
 
     ; Start SSH server
     Info('Starting SSH server')
@@ -132,6 +152,7 @@ if (openSSHPath != '' and FileExist(openSSHPath . '\sshd.exe')) {
     ; `ssh.exe` prefixes the username with the domain name.
     cloneOptions := '--upload-pack="powershell git upload-pack" "' .
         EnvGet('USERNAME') . '@localhost:' . largeGitRepoPath . '" "' . largeGitClonePath . '"'
+    WaitForSshd()
     Send('git -c core.sshCommand="ssh ' . sshOptions . '" clone ' . cloneOptions . '{Enter}')
     Sleep 50
     Info('Waiting for clone to start')
@@ -177,6 +198,16 @@ if (openSSHPath != '' and FileExist(openSSHPath . '\sshd.exe')) {
 
     if not DirExist(largeGitClonePath)
         ExitWithError('`large-clone` did not work?!?')
+
+    for proc in ComObjGet('winmgmts:').ExecQuery('SELECT ProcessId, Name, ExecutablePath FROM Win32_Process WHERE Name LIKE "sshd%.exe"') {
+        if (proc.ExecutablePath != '' and InStr(proc.ExecutablePath, openSSHPath) > 0) {
+            Info('Stopping ' . proc.Name . ' (PID ' . proc.ProcessId . ')')
+            try {
+                ProcessClose proc.ProcessId
+                ProcessWaitClose proc.ProcessId, 5
+            }
+        }
+    }
 }
 
 Send('exit{Enter}')
