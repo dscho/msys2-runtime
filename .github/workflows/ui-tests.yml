@@ -190,6 +190,12 @@ jobs:
           $screen = [System.Windows.Forms.Screen]::PrimaryScreen
           $bounds = [Drawing.Rectangle]::FromLTRB(0, 0, $screen.Bounds.Width * $dpi / 96, $screen.Bounds.Height * $dpi / 96)
           screenshot $bounds "ui-tests/screenshot.png"
+      - name: Stop SSH server
+        if: always()
+        shell: powershell
+        run: |
+          Get-Process sshd -ErrorAction SilentlyContinue |
+            ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v7
