@@ -2200,6 +2200,7 @@ private:
   HANDLE input_mutex, output_mutex;
   handle_set_t handle_set;
   _minor_t unit;
+  size_t num_input_events_processed;
 
   /* Used when we encounter a truncated multi-byte sequence.  The
      lead bytes are stored here and revisited in the next write call. */

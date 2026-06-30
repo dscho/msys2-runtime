@@ -353,7 +353,10 @@ fhandler_termios::process_sigs (char c, tty* ttyp, fhandler_termios *fh)
 	      fhandler_pty_common::attach_console_temporarily (p->dwProcessId);
 	  if (fh && p == myself && being_debugged ())
 	    { /* Avoid deadlock in gdb on console. */
-	      fh->tcflush(TCIFLUSH);
+	      if (fh->is_console ())
+		fh->discard_key_events (0 /* to current position */);
+	      else
+		fh->tcflush(TCIFLUSH);
 	      fh->release_input_mutex_if_necessary ();
 	    }
 	  /* CTRL_C_EVENT does not work for the process started with
@@ -444,10 +447,14 @@ fhandler_termios::process_sigs (char c, tty* ttyp, fhandler_termios *fh)
 	goto not_a_sig;
 
       termios_printf ("got interrupt %d, sending signal %d", c, sig);
-      if (!(ti.c_lflag & NOFLSH) && fh)
+      if (fh)
 	{
-	  fh->eat_readahead (-1);
-	  fh->discard_input ();
+	  if (!(ti.c_lflag & NOFLSH))
+	    {
+	      fh->eat_readahead (-1);
+	      fh->discard_input ();
+	    }
+	  fh->discard_key_events (0 /* to current position */);
 	}
       if (fh)
 	fh->release_input_mutex_if_necessary ();
@@ -460,6 +467,8 @@ fhandler_termios::process_sigs (char c, tty* ttyp, fhandler_termios *fh)
 not_a_sig:
   if ((ti.c_lflag & ISIG) && need_discard_input)
     {
+      if (need_send_sig)
+	return not_signalled;
       if (!(ti.c_lflag & NOFLSH) && fh)
 	{
 	  fh->eat_readahead (-1);
@@ -525,10 +534,11 @@ fhandler_termios::line_edit (const char *rptr, size_t nread, termios& ti,
       switch (process_sigs (c, get_ttyp (), this))
 	{
 	case signalled:
-	case not_signalled_but_done:
 	case done_with_debugger:
 	  sawsig = true;
 	  get_ttyp ()->output_stopped = false;
+	  fallthrough;
+	case not_signalled_but_done:
 	  continue;
 	case not_signalled_with_nat_reader:
 	  disable_eof_key = true;
@@ -666,13 +676,9 @@ fhandler_termios::sigflush ()
      be NULL while this is alive.  However, we can conceivably close a
      ctty while exiting and that will zero this. */
   if ((!have_execed || have_execed_cygwin) && tc ()
-      && (tc ()->getpgid () == myself->pgid))
-    {
-      if (!(tc ()->ti.c_lflag & NOFLSH))
-	tcflush (TCIFLUSH);
-      else
-	discard_key_events (1);
-    }
+      && (tc ()->getpgid () == myself->pgid)
+      && !(tc ()->ti.c_lflag & NOFLSH))
+    tcflush (TCIFLUSH);
 }
 
 pid_t

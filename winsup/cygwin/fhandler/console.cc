@@ -1665,6 +1665,7 @@ fhandler_console::process_input_message (size_t len)
 	  continue;
 	}
 
+      num_input_events_processed = i + 1;
       num_chars += nread;
       if (toadd)
 	{
@@ -1695,17 +1696,11 @@ out:
   /* Discard processed recored. */
   DWORD discard_len = min (total_read, i + 1);
   /* If input is signalled, do not discard input here because
-     tcflush() is already called from line_edit(). */
-  if (stat == input_signalled && !(ti->c_lflag & NOFLSH))
+     discard_key_events() is already called from line_edit(). */
+  if (stat == input_signalled)
     discard_len = 0;
   if (discard_len && (len || stat != input_ok))
-    {
-      acquire_attach_mutex (mutex_timeout);
-      DWORD resume_pid = attach_console (con.owner);
-      discard_key_events (discard_len);
-      detach_console (resume_pid, con.owner);
-      release_attach_mutex ();
-    }
+    discard_key_events (discard_len);
   return stat;
 }
 
@@ -1713,15 +1708,25 @@ void
 fhandler_console::discard_key_events (size_t n)
 {
   DWORD discarded = 0;
+  if (n == 0)
+    {
+      n = num_input_events_processed;
+      num_input_events_processed = 0;
+    }
   INPUT_RECORD input_rec[INREC_SIZE];
   DWORD n1 = min (INREC_SIZE, n);
+  acquire_attach_mutex (mutex_timeout);
+  DWORD resume_pid = attach_console (con.owner);
   while (n)
     {
-      ReadConsoleInputW (get_handle (), input_rec, n1, &n1);
+      if (!ReadConsoleInputW (get_handle (), input_rec, n1, &n1) || !n1)
+	break;
       n -= n1;
       discarded += n1;
       n1 = min (INREC_SIZE, n);
     }
+  detach_console (resume_pid, con.owner);
+  release_attach_mutex ();
   con.num_processed -= min (con.num_processed, discarded);
 }
 
@@ -2305,7 +2310,8 @@ fhandler_console::tcgetattr (struct termios *t)
 
 fhandler_console::fhandler_console (fh_devices devunit) :
   fhandler_termios (), input_ready (false), thread_sync_event (NULL),
-  input_mutex (NULL), output_mutex (NULL), unit (MAX_CONS_DEV)
+  input_mutex (NULL), output_mutex (NULL), unit (MAX_CONS_DEV),
+  num_input_events_processed (0)
 {
   dev_referred_via = (dev_t) devunit;
   if (devunit > 0)
