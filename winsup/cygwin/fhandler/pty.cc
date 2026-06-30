@@ -1002,6 +1002,10 @@ fhandler_pty_slave::open_setup (int flags)
 void
 fhandler_pty_slave::cleanup ()
 {
+  fhandler_pty_slave *arch = (fhandler_pty_slave *) archetype ? : this;
+  while (arch->num_reader)
+    mask_switch_to_nat_pipe (false, false);
+
   /* This used to always call fhandler_pty_common::close when we were execing
      but that caused multiple closes of the handles associated with this pty.
      Since close_all_files is not called until after the cygwin process has
@@ -1263,19 +1267,23 @@ fhandler_pty_slave::write (const void *ptr, size_t len)
 void
 fhandler_pty_slave::mask_switch_to_nat_pipe (bool mask, bool xfer)
 {
+  /* This input_mutex guard works as expected only because every
+     caller of transfer_input() holds input_mutex. This is a non-
+     local precondition. */
+  WaitForSingleObject (input_mutex, mutex_timeout);
   char name[MAX_PATH];
   shared_name (name, TTY_SLAVE_READING, get_minor ());
   HANDLE masked = OpenEvent (READ_CONTROL, FALSE, name);
   CloseHandle (masked);
 
-  WaitForSingleObject (input_mutex, mutex_timeout);
+  fhandler_pty_slave *arch = (fhandler_pty_slave *) archetype ? : this;
   if (mask)
     {
-      if (InterlockedIncrement (&num_reader) == 1)
-	slave_reading = CreateEvent (&sec_none_nih, TRUE, FALSE, name);
+      if (InterlockedIncrement (&arch->num_reader) == 1)
+	arch->slave_reading = CreateEvent (&sec_none_nih, TRUE, FALSE, name);
     }
-  else if (InterlockedDecrement (&num_reader) == 0)
-    CloseHandle (slave_reading);
+  else if (InterlockedDecrement (&arch->num_reader) == 0)
+    CloseHandle (arch->slave_reading);
 
   if (!!masked != mask && xfer && get_ttyp ()->switch_to_nat_pipe)
     {
@@ -4142,6 +4150,18 @@ fhandler_pty_slave::transfer_input (tty::xfer_dir dir, HANDLE from, tty *ttyp,
 				    HANDLE input_available_event,
 				    HANDLE input_transferred_to_cyg)
 {
+  if (dir == tty::to_nat)
+    {
+      char name[MAX_PATH];
+      shared_name (name, TTY_SLAVE_READING, ttyp->get_minor ());
+      HANDLE masked = OpenEvent (READ_CONTROL, FALSE, name);
+      CloseHandle (masked);
+      if (masked)
+	/* Cygwin process is reading cyg-pipe.
+	   Do not transfer input to nat-pipe. */
+	return;
+    }
+
   HANDLE to;
   if (dir == tty::to_nat)
     to = ttyp->to_slave_nat ();
