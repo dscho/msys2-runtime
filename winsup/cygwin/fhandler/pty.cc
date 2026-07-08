@@ -3711,7 +3711,8 @@ skip_create:
   replace_nat_handles (hpConIn, hpConOut);
 
   if (!process_alive (get_ttyp ()->nat_pipe_owner_pid))
-    get_ttyp ()->nat_pipe_owner_pid = myself->exec_dwProcessId;
+    get_ttyp ()->nat_pipe_owner_pid =
+      myself->exec_dwProcessId ? : myself->dwProcessId;
 
   if (hpcon && nat_pipe_owner_self (get_ttyp ()->nat_pipe_owner_pid))
     {
@@ -4423,7 +4424,12 @@ fhandler_pty_slave::setup_for_non_cygwin_app (bool nopcon,
       fhandler_pty_slave *ptys = (fhandler_pty_slave *) fh;
       ptys->get_ttyp ()->switch_to_nat_pipe = true;
       if (!process_alive (ptys->get_ttyp ()->nat_pipe_owner_pid))
-	ptys->get_ttyp ()->nat_pipe_owner_pid = myself->exec_dwProcessId;
+	/* In normal case where the current process is the stub process for
+	   non-cygwin app, set owner to exec_dwProcessId (which is the PID
+	   of the stub process itself). In gdb case, since gdb itself
+	   should be the owner, the owner pid must be set to dwProcessId. */
+	ptys->get_ttyp ()->nat_pipe_owner_pid =
+	  myself->exec_dwProcessId ? : myself->dwProcessId;
     }
   bool pcon_enabled = false;
   if (!nopcon)
@@ -4551,6 +4557,8 @@ fhandler_pty_common::attach_console_temporarily (DWORD target_pid)
 {
   DWORD resume_pid = 0;
   acquire_attach_mutex (mutex_timeout);
+  if (target_pid == GetCurrentProcessId ())
+    return target_pid;
   pinfo pinfo_resume (myself->ppid);
   if (pinfo_resume)
     resume_pid = pinfo_resume->dwProcessId;
@@ -4569,6 +4577,11 @@ fhandler_pty_common::attach_console_temporarily (DWORD target_pid)
 void
 fhandler_pty_common::resume_from_temporarily_attach (DWORD resume_pid)
 {
+  if (resume_pid == GetCurrentProcessId ())
+    {
+      release_attach_mutex ();
+      return;
+    }
   bool console_exists = (resume_pid != (DWORD) -1);
   if (!console_exists || resume_pid)
     {
