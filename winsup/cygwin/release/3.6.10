@@ -24,3 +24,9 @@ Fixes:
 - Fix NOFLSH behaviour in console a bit.
 
 - Fix typeahead input in console for bash.
+
+- Fix a pty race issue at startup of cygwin and non-cygwin processes
+  where the different pipe mode (nat or cyg) is required.
+
+- Fix non-cygwin inferior crash in gdb when it is launched repeatedly
+  in a pty.
