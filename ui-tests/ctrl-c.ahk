@@ -158,12 +158,20 @@ if (openSSHPath != '' and FileExist(openSSHPath . '\sshd.exe')) {
     cloneOptions := '--upload-pack="powershell git upload-pack" "' .
         EnvGet('USERNAME') . '@localhost:' . largeGitRepoPath . '" "' . largeGitClonePath . '"'
     WaitForSshd()
+    if ProcessExist('ssh.exe')
+        ExitWithError 'Unexpected ssh.exe before clone'
     Send('git -c core.sshCommand="ssh ' . sshOptions . '" clone ' . cloneOptions . '{Enter}')
-    Sleep 50
-    Info('Waiting for clone to start')
-    WinActivate('ahk_id ' . hwnd)
-    WaitForRegExInWindowsTerminal('remote: ', 'Timed out waiting for clone to start', 'Clone started', 15000, 'ahk_id ' . hwnd)
+    deadline := A_TickCount + 15000
+    while !(cloneSshPID := ProcessExist('ssh.exe')) &&
+        A_TickCount < deadline
+        Sleep 10
+    if !cloneSshPID
+        ExitWithError 'Timed out waiting for clone ssh.exe'
+    Info('Clone ssh.exe started: ' . cloneSshPID)
     Info('Trying to interrupt clone')
+    WinActivate('ahk_id ' . hwnd)
+    if !ProcessExist(cloneSshPID)
+        ExitWithError 'Clone completed before Ctrl+C could be sent'
     Send('^C') ; interrupt clone
     Sleep 150
     WaitForRegExInWindowsTerminal('`nfatal: (.*`r?`n){1,3}PS .*>[ `n`r]*$', 'Timed out waiting for clone to be interrupted', 'clone was interrupted as desired')
