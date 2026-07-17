@@ -14,14 +14,7 @@ env:
 
 jobs:
   ui-tests:
-    strategy:
-      fail-fast: false
-      matrix:
-        # Corresponds to Windows Server versions
-        # See https://github.com/actions/runner-images?tab=readme-ov-file#available-images
-        os: [windows-2022, windows-2025]
-
-    runs-on: ${{ matrix.os }}
+    runs-on: windows-2025
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -35,6 +28,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           sparse-checkout: |
+            .github
             ui-tests
 
       - uses: actions/cache/restore@v5
@@ -103,36 +97,83 @@ jobs:
           & "${env:RUNNER_TEMP}\ahk\AutoHotKey64.exe" /ErrorStdOut /force minimize-log-window.ahk "$PWD\minimize-log-window" 2>&1 | Out-Default
           if (!$?) { $exitCode = 1; echo "::error::Failed to minimize Log window!" } else { echo "::notice::Minimized Log window" }
           exit $exitCode
-      - name: Run UI tests
-        id: ui-tests
-        timeout-minutes: 10
+      - name: Run ctrl-c UI test once
+        id: ctrl-c-initial
+        continue-on-error: true
+        timeout-minutes: 15
         working-directory: ui-tests
         run: |
-          $exitCode = 0
-          & "${env:RUNNER_TEMP}\ahk\AutoHotKey64.exe" /ErrorStdOut /force background-hook.ahk "$PWD\bg-hook" 2>&1 | Out-Default
-          if (!$?) { $exitCode = 1; echo "::error::Test failed!" } else { echo "::notice::Test log" }
-          $env:LARGE_FILES_DIRECTORY = "${env:RUNNER_TEMP}\large"
-          & "${env:RUNNER_TEMP}\ahk\AutoHotKey64.exe" /ErrorStdOut /force ctrl-c.ahk "$PWD\ctrl-c" 2>&1 | Out-Default
-          if (!$?) { $exitCode = 1; echo "::error::Ctrl+C Test failed!" } else { echo "::notice::Ctrl+C Test log" }
-          & "${env:RUNNER_TEMP}\ahk\AutoHotKey64.exe" /ErrorStdOut /force keystroke-order.ahk "$PWD\keystroke-order" 2>&1 | Out-Default
-          if (!$?) { $exitCode = 1; echo "::error::Keystroke-order Test failed!" } else { echo "::notice::Keystroke-order Test log" }
-          & "${env:RUNNER_TEMP}\ahk\AutoHotKey64.exe" /ErrorStdOut /force pcon-grandchild-input.ahk "$PWD\pcon-grandchild-input" 2>&1 | Out-Default
-          if (!$?) { $exitCode = 1; echo "::error::pcon-grandchild-input Test failed!" } else { echo "::notice::pcon-grandchild-input Test log" }
-          & "${env:RUNNER_TEMP}\ahk\AutoHotKey64.exe" /ErrorStdOut /force pcon-tcflush.ahk "$PWD\pcon-tcflush" 2>&1 | Out-Default
-          if (!$?) { $exitCode = 1; echo "::error::pcon-tcflush Test failed!" } else { echo "::notice::pcon-tcflush Test log" }
-          & "${env:RUNNER_TEMP}\ahk\AutoHotKey64.exe" /ErrorStdOut /force pcon-ctrl-c-cmd.ahk "$PWD\pcon-ctrl-c-cmd" 2>&1 | Out-Default
-          if (!$?) { $exitCode = 1; echo "::error::pcon-ctrl-c-cmd Test failed!" } else { echo "::notice::pcon-ctrl-c-cmd Test log" }
-          exit $exitCode
+          $env:LARGE_FILES_DIRECTORY = "${env:RUNNER_TEMP}\large-initial"
+          & "${env:RUNNER_TEMP}\ahk\AutoHotKey64.exe" /ErrorStdOut /force `
+            ctrl-c.ahk "$PWD\ctrl-c-initial" 2>&1 |
+            Tee-Object -FilePath ctrl-c-initial.console.log |
+            Out-Default
+          exit $LASTEXITCODE
+
+      - name: Set up Copilot CLI
+        if: always()
+        shell: bash
+        run: npm install -g @github/copilot
+
+      - name: Run Copilot CLI to debug the flake
+        if: always()
+        timeout-minutes: 120
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          INITIAL_TEST_OUTCOME: ${{ steps.ctrl-c-initial.outcome }}
+          MSYS2_ARG_CONV_EXCL: '*'
+        run: |
+          copilot -p \
+            "Follow @.github/copilot-prompts/debug-ui-flake.md exactly." \
+            --yolo </dev/null
+
+      - name: Verify ctrl-c UI test repeatedly
+        if: always()
+        timeout-minutes: 90
+        working-directory: ui-tests
+        run: |
+          for ($i = 1; $i -le 20; $i++) {
+            Write-Host "Verification run $i/20"
+            $env:LARGE_FILES_DIRECTORY = "${env:RUNNER_TEMP}\large-$i"
+            & "${env:RUNNER_TEMP}\ahk\AutoHotKey64.exe" /ErrorStdOut /force `
+              ctrl-c.ahk "$PWD\ctrl-c-verify-$i" 2>&1 |
+              Tee-Object -FilePath "ctrl-c-verify-$i.console.log" |
+              Out-Default
+            if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+            }
+          }
+
+      - name: Archive Copilot session state
+        if: always()
+        shell: bash
+        run: |
+          if test -d ~/.copilot
+          then
+            tar czf copilot-session.tar.gz -C "$HOME" .copilot
+          fi
+
+      - name: Upload Copilot artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: copilot-debug
+          if-no-files-found: warn
+          path: |
+            copilot-session.tar.gz
+            copilot-diagnosis.md
+
       - name: Show logs
         if: always()
         working-directory: ui-tests
         run: |
-          type bg-hook.log
-          type ctrl-c.log
-          type keystroke-order.log
-          type pcon-grandchild-input.log
-          type pcon-tcflush.log
-          type pcon-ctrl-c-cmd.log
+          Get-ChildItem -Filter 'ctrl-c*.log' |
+            Sort-Object Name |
+            ForEach-Object {
+              Write-Host "===== $($_.Name) ====="
+              Get-Content $_
+            }
       - name: Take screenshot, if canceled
         id: take-screenshot
         if: cancelled() || failure()
@@ -200,5 +241,5 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: ui-tests-${{ matrix.os }}
+          name: ui-tests-windows-2025
           path: ui-tests
