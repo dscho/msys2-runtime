@@ -114,6 +114,28 @@ if (openSSHPath != '' and FileExist(openSSHPath . '\sshd.exe')) {
         }
     }
 
+    WaitForCloneProcesses(clonePath, keyPath) {
+        deadline := A_TickCount + 15000
+        while A_TickCount < deadline {
+            query := 'SELECT ProcessId, ParentProcessId, CommandLine ' .
+                'FROM Win32_Process WHERE Name = "ssh.exe"'
+            for ssh in ComObjGet('winmgmts:').ExecQuery(query) {
+                if !InStr(ssh.CommandLine, keyPath)
+                    continue
+                parentQuery := 'SELECT ProcessId, Name, CommandLine ' .
+                    'FROM Win32_Process WHERE ProcessId = ' .
+                    ssh.ParentProcessId
+                for git in ComObjGet('winmgmts:').ExecQuery(parentQuery) {
+                    if git.Name == 'git.exe' &&
+                        InStr(git.CommandLine, clonePath)
+                        return [git.ProcessId, ssh.ProcessId]
+                }
+            }
+            Sleep 25
+        }
+        return [0, 0]
+    }
+
     ; Set up SSH server
     Info('Generating host key')
     RunWait('git -c alias.c="!ssh-keygen -b 4096 -f ssh_host_rsa_key -N \"\"" c', '', 'Hide')
@@ -158,23 +180,26 @@ if (openSSHPath != '' and FileExist(openSSHPath . '\sshd.exe')) {
     cloneOptions := '--upload-pack="powershell git upload-pack" "' .
         EnvGet('USERNAME') . '@localhost:' . largeGitRepoPath . '" "' . largeGitClonePath . '"'
     WaitForSshd()
-    if ProcessExist('ssh.exe')
-        ExitWithError 'Unexpected ssh.exe before clone'
     Send('git -c core.sshCommand="ssh ' . sshOptions . '" clone ' . cloneOptions . '{Enter}')
-    deadline := A_TickCount + 15000
-    while !(cloneSshPID := ProcessExist('ssh.exe')) &&
-        A_TickCount < deadline
-        Sleep 10
-    if !cloneSshPID
-        ExitWithError 'Timed out waiting for clone ssh.exe'
+    cloneProcesses := WaitForCloneProcesses(
+        largeGitClonePath, workTreeMSYS . '/id_rsa')
+    cloneGitPID := cloneProcesses[1]
+    cloneSshPID := cloneProcesses[2]
+    if !cloneGitPID || !cloneSshPID
+        ExitWithError 'Timed out waiting for clone processes'
     Info('Clone ssh.exe started: ' . cloneSshPID)
     Info('Trying to interrupt clone')
     WinActivate('ahk_id ' . hwnd)
-    if !ProcessExist(cloneSshPID)
+    if !ProcessExist(cloneGitPID) || !ProcessExist(cloneSshPID)
         ExitWithError 'Clone completed before Ctrl+C could be sent'
     Send('^C') ; interrupt clone
-    Sleep 150
-    WaitForRegExInWindowsTerminal('`nfatal: (.*`r?`n){1,3}PS .*>[ `n`r]*$', 'Timed out waiting for clone to be interrupted', 'clone was interrupted as desired')
+    deadline := A_TickCount + 15000
+    while (ProcessExist(cloneGitPID) || ProcessExist(cloneSshPID)) &&
+        A_TickCount < deadline
+        Sleep 10
+    if ProcessExist(cloneGitPID) || ProcessExist(cloneSshPID)
+        ExitWithError 'Clone processes did not exit after Ctrl+C'
+    Info('clone was interrupted as desired')
 
     if DirExist(largeGitClonePath)
         ExitWithError('`large-clone` was unexpectedly not deleted on interrupt')

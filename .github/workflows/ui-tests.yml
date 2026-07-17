@@ -97,36 +97,55 @@ jobs:
           & "${env:RUNNER_TEMP}\ahk\AutoHotKey64.exe" /ErrorStdOut /force minimize-log-window.ahk "$PWD\minimize-log-window" 2>&1 | Out-Default
           if (!$?) { $exitCode = 1; echo "::error::Failed to minimize Log window!" } else { echo "::notice::Minimized Log window" }
           exit $exitCode
-      - name: Verify ctrl-c UI test repeatedly
+      - name: Stress ctrl-c UI test
+        id: stress_before
+        continue-on-error: true
         timeout-minutes: 75
         working-directory: ui-tests
+        run: ./run-ctrl-c-stress.ps1 -Prefix before-copilot
+
+      - name: Set up Copilot CLI
+        if: steps.stress_before.outcome == 'failure'
+        shell: bash
+        run: npm install -g @github/copilot
+
+      - name: Run Copilot CLI to debug the flake
+        if: steps.stress_before.outcome == 'failure'
+        timeout-minutes: 120
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          INITIAL_TEST_OUTCOME: ${{ steps.stress_before.outcome }}
+          MSYS2_ARG_CONV_EXCL: '*'
         run: |
-          $ahk = "${env:RUNNER_TEMP}\ahk\AutoHotKey64.exe"
-          for ($i = 1; $i -le 20; $i++) {
-            Write-Host "Verification run $i/20"
-            $env:LARGE_FILES_DIRECTORY = "${env:RUNNER_TEMP}\large-$i"
-            $stdout = "$PWD\ctrl-c-verify-$i.stdout.log"
-            $stderr = "$PWD\ctrl-c-verify-$i.stderr.log"
-            $arguments = @(
-              '/ErrorStdOut'
-              '/force'
-              'ctrl-c.ahk'
-              "$PWD\ctrl-c-verify-$i"
-            )
-            $process = Start-Process -FilePath $ahk `
-              -ArgumentList $arguments -PassThru `
-              -RedirectStandardOutput $stdout `
-              -RedirectStandardError $stderr
-            if (!$process.WaitForExit(180000)) {
-              Stop-Process -Id $process.Id -Force
-              throw "Verification run $i timed out"
-            }
-            Get-Content $stdout -ErrorAction SilentlyContinue
-            Get-Content $stderr -ErrorAction SilentlyContinue
-            if ($process.ExitCode -ne 0) {
-              throw "Verification run $i exited with $($process.ExitCode)"
-            }
-          }
+          copilot -p \
+            "Follow @.github/copilot-prompts/debug-ui-flake.md exactly." \
+            --yolo </dev/null
+
+      - name: Verify Copilot fix
+        if: steps.stress_before.outcome == 'failure'
+        timeout-minutes: 75
+        working-directory: ui-tests
+        run: ./run-ctrl-c-stress.ps1 -Prefix after-copilot
+
+      - name: Archive Copilot session state
+        if: always() && steps.stress_before.outcome == 'failure'
+        shell: bash
+        run: |
+          if test -d ~/.copilot
+          then
+            tar czf copilot-session.tar.gz -C "$HOME" .copilot
+          fi
+
+      - name: Upload Copilot artifacts
+        if: always() && steps.stress_before.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: copilot-debug
+          if-no-files-found: warn
+          path: |
+            copilot-session.tar.gz
+            copilot-diagnosis.md
 
       - name: Show logs
         if: always()
