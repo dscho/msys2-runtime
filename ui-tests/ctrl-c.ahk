@@ -96,14 +96,14 @@ if (openSSHPath != '' and FileExist(openSSHPath . '\sshd.exe')) {
             ExitWithError 'Could not add admin read permission from ' . path . ': ' A_LastError
     }
 
-    WaitForSshd() {
+    WaitForSshd(expectedPID) {
         deadline := A_TickCount + 60000
         while true {
             if FileExist('sshd.pid') {
                 content := ''
                 try
                     content := Trim(FileRead('sshd.pid'), ' `t`r`n')
-                if content != '' {
+                if content == expectedPID && ProcessExist(expectedPID) {
                     Info('sshd is accepting connections (PID ' . content . ')')
                     return
                 }
@@ -114,24 +114,93 @@ if (openSSHPath != '' and FileExist(openSSHPath . '\sshd.exe')) {
         }
     }
 
-    WaitForCloneProcesses(clonePath, keyPath) {
-        deadline := A_TickCount + 15000
-        while A_TickCount < deadline {
-            query := 'SELECT ProcessId, ParentProcessId, CommandLine ' .
-                'FROM Win32_Process WHERE Name = "ssh.exe"'
-            for ssh in ComObjGet('winmgmts:').ExecQuery(query) {
-                if !InStr(ssh.CommandLine, keyPath)
-                    continue
-                parentQuery := 'SELECT ProcessId, Name, CommandLine ' .
-                    'FROM Win32_Process WHERE ProcessId = ' .
-                    ssh.ParentProcessId
-                for git in ComObjGet('winmgmts:').ExecQuery(parentQuery) {
-                    if git.Name == 'git.exe' &&
-                        InStr(git.CommandLine, clonePath)
-                        return [git.ProcessId, ssh.ProcessId]
+    StartSshd(openSSHPath, sshdOptions, sshdPIDs) {
+        try FileDelete('sshd.pid')
+        Run(openSSHPath . '\sshd.exe ' . sshdOptions, '', 'Hide', &pid)
+        if A_LastError
+            ExitWithError 'Error starting SSH server: ' A_LastError
+        sshdPIDs.Push(pid)
+        Info('Started SSH server: ' . pid)
+        WaitForSshd(pid)
+        return pid
+    }
+
+    StopSshd(pid, openSSHPath, sshdPIDs) {
+        if !pid
+            return true
+        proc := FindProcess(pid)
+        executablePath := ''
+        if proc
+            try executablePath := proc.ExecutablePath
+        if executablePath == openSSHPath . '\sshd.exe' {
+            Info('Stopping sshd.exe (PID ' . pid . ')')
+            try ProcessClose(pid)
+            try ProcessWaitClose(pid, 5)
+        }
+        if !ProcessExist(pid) {
+            loop sshdPIDs.Length {
+                if sshdPIDs[A_Index] == pid {
+                    sshdPIDs.RemoveAt(A_Index)
+                    break
                 }
             }
-            Sleep 25
+        }
+        return !ProcessExist(pid)
+    }
+
+    CleanUpSshdProcesses(sshdPIDs, openSSHPath, *) {
+        for pid in sshdPIDs.Clone()
+            StopSshd(pid, openSSHPath, sshdPIDs)
+    }
+
+    FindProcess(pid) {
+        query := 'SELECT ProcessId, ParentProcessId, Name, CommandLine, ' .
+            'ExecutablePath FROM Win32_Process WHERE ProcessId = ' . pid
+        for proc in ComObjGet('winmgmts:').ExecQuery(query)
+            return proc
+        return 0
+    }
+
+    ProcessMatches(pid, name, marker) {
+        proc := FindProcess(pid)
+        if !proc || proc.Name != name
+            return false
+        commandLine := ''
+        try commandLine := proc.CommandLine
+        return InStr(commandLine, marker)
+    }
+
+    WatchSshStarts() {
+        query := 'SELECT * FROM Win32_ProcessStartTrace ' .
+            'WHERE ProcessName = "ssh.exe"'
+        return ComObjGet('winmgmts:').ExecNotificationQuery(query)
+    }
+
+    WaitForCloneProcesses(events, clonePath, keyPath) {
+        deadline := A_TickCount + 15000
+        while A_TickCount < deadline {
+            try event := events.NextEvent(deadline - A_TickCount)
+            catch
+                break
+            ssh := FindProcess(event.ProcessID)
+            if !ssh
+                continue
+            sshCommandLine := ''
+            try sshCommandLine := ssh.CommandLine
+            if !InStr(sshCommandLine, keyPath)
+                continue
+            ancestor := FindProcess(ssh.ParentProcessId)
+            loop 8 {
+                if !ancestor
+                    break
+                commandLine := ''
+                try commandLine := ancestor.CommandLine
+                if ancestor.Name == 'git.exe' &&
+                    InStr(commandLine, clonePath) {
+                    return [ancestor.ProcessId, ssh.ProcessId]
+                }
+                ancestor := FindProcess(ancestor.ParentProcessId)
+            }
         }
         return [0, 0]
     }
@@ -156,13 +225,14 @@ if (openSSHPath != '' and FileExist(openSSHPath . '\sshd.exe')) {
         'PidFile "' . workTree . '\sshd.pid"`n',
         'sshd_config')
     sshdOptions := '-f "' . workTree . '\sshd_config" -D -E "' . workTree . '\sshd.log"'
+    sshdPIDs := []
+    sshdCleanup := CleanUpSshdProcesses.Bind(
+        sshdPIDs, openSSHPath)
+    OnExit(sshdCleanup)
 
     ; Start SSH server
     Info('Starting SSH server')
-    Run(openSSHPath . '\sshd.exe ' . sshdOptions, '', 'Hide', &sshdPID)
-    if A_LastError
-        ExitWithError 'Error starting SSH server: ' A_LastError
-    Info('Started SSH server: ' sshdPID)
+    sshdPID := StartSshd(openSSHPath, sshdOptions, sshdPIDs)
 
     Info('Starting clone')
     workTreeMSYS := RunWaitOne('git -c alias.cygpath="!cygpath" cygpath -u "' . workTree . '"')
@@ -179,10 +249,11 @@ if (openSSHPath != '' and FileExist(openSSHPath . '\sshd.exe')) {
     ; `ssh.exe` prefixes the username with the domain name.
     cloneOptions := '--upload-pack="powershell git upload-pack" "' .
         EnvGet('USERNAME') . '@localhost:' . largeGitRepoPath . '" "' . largeGitClonePath . '"'
-    WaitForSshd()
+    sshStartEvents := WatchSshStarts()
+    WinActivate('ahk_id ' . hwnd)
     Send('git -c core.sshCommand="ssh ' . sshOptions . '" clone ' . cloneOptions . '{Enter}')
     cloneProcesses := WaitForCloneProcesses(
-        largeGitClonePath, workTreeMSYS . '/id_rsa')
+        sshStartEvents, largeGitClonePath, workTreeMSYS . '/id_rsa')
     cloneGitPID := cloneProcesses[1]
     cloneSshPID := cloneProcesses[2]
     if !cloneGitPID || !cloneSshPID
@@ -190,31 +261,37 @@ if (openSSHPath != '' and FileExist(openSSHPath . '\sshd.exe')) {
     Info('Clone ssh.exe started: ' . cloneSshPID)
     Info('Trying to interrupt clone')
     WinActivate('ahk_id ' . hwnd)
-    if !ProcessExist(cloneGitPID) || !ProcessExist(cloneSshPID)
+    if !ProcessMatches(cloneGitPID, 'git.exe', largeGitClonePath) ||
+        !ProcessMatches(cloneSshPID, 'ssh.exe', workTreeMSYS . '/id_rsa')
         ExitWithError 'Clone completed before Ctrl+C could be sent'
     Send('^C') ; interrupt clone
     deadline := A_TickCount + 15000
-    while (ProcessExist(cloneGitPID) || ProcessExist(cloneSshPID)) &&
+    while (ProcessMatches(cloneGitPID, 'git.exe', largeGitClonePath) ||
+        ProcessMatches(cloneSshPID, 'ssh.exe', workTreeMSYS . '/id_rsa')) &&
         A_TickCount < deadline
         Sleep 10
-    if ProcessExist(cloneGitPID) || ProcessExist(cloneSshPID)
+    if ProcessMatches(cloneGitPID, 'git.exe', largeGitClonePath) ||
+        ProcessMatches(cloneSshPID, 'ssh.exe', workTreeMSYS . '/id_rsa')
         ExitWithError 'Clone processes did not exit after Ctrl+C'
     Info('clone was interrupted as desired')
 
+    deadline := A_TickCount + 5000
+    while DirExist(largeGitClonePath) && A_TickCount < deadline
+        Sleep 10
     if DirExist(largeGitClonePath)
         ExitWithError('`large-clone` was unexpectedly not deleted on interrupt')
 
     ; Now verify that the SSH-based clone actually works and does not hang
     Info('Re-starting SSH server')
-    Run(openSSHPath . '\sshd.exe ' . sshdOptions, '', 'Hide', &sshdPID)
-    if A_LastError
-        ExitWithError 'Error starting SSH server: ' A_LastError
-    Info('Started SSH server: ' sshdPID)
+    if !StopSshd(sshdPID, openSSHPath, sshdPIDs)
+        ExitWithError 'Could not stop SSH server before restart'
+    sshdPID := StartSshd(openSSHPath, sshdOptions, sshdPIDs)
 
     Info('Starting clone')
     retries := 5
     cloneResultMarker := 'GIT_CLONE_EXIT_CODE='
     Loop retries {
+        WinActivate('ahk_id ' . hwnd)
         Send('git -c core.sshCommand="ssh ' . sshOptions . '" clone ' .
             cloneOptions . '; Write-Output "' . cloneResultMarker .
             '$LASTEXITCODE"{Enter}')
@@ -235,25 +312,19 @@ if (openSSHPath != '' and FileExist(openSSHPath . '\sshd.exe')) {
             ', restarting SSH server and retrying...')
         if DirExist(largeGitClonePath)
             DirDelete(largeGitClonePath, true)
-        ; Restart sshd for the next attempt (it may have exited after the failed connection)
-        Run(openSSHPath . '\sshd.exe ' . sshdOptions, '', 'Hide', &sshdPID)
-        if A_LastError
-            ExitWithError 'Error restarting SSH server: ' A_LastError
-        Info('Restarted SSH server: ' sshdPID)
+        if !StopSshd(sshdPID, openSSHPath, sshdPIDs)
+            ExitWithError 'Could not stop SSH server before retry'
+        sshdPID := StartSshd(openSSHPath, sshdOptions, sshdPIDs)
+        Info('Restarted SSH server: ' . sshdPID)
     }
 
     if not DirExist(largeGitClonePath)
         ExitWithError('`large-clone` did not work?!?')
 
-    for proc in ComObjGet('winmgmts:').ExecQuery('SELECT ProcessId, Name, ExecutablePath FROM Win32_Process WHERE Name LIKE "sshd%.exe"') {
-        if (proc.ExecutablePath != '' and InStr(proc.ExecutablePath, openSSHPath) > 0) {
-            Info('Stopping ' . proc.Name . ' (PID ' . proc.ProcessId . ')')
-            try {
-                ProcessClose proc.ProcessId
-                ProcessWaitClose proc.ProcessId, 5
-            }
-        }
-    }
+    CleanUpSshdProcesses(sshdPIDs, openSSHPath)
+    if sshdPIDs.Length
+        ExitWithError 'Could not stop all SSH servers'
+    OnExit(sshdCleanup, 0)
 }
 
 WinActivate('ahk_id ' . hwnd)
