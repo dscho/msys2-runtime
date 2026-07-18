@@ -120,13 +120,18 @@ jobs:
         run: |
           copilot -p \
             "Follow @.github/copilot-prompts/debug-ui-flake.md exactly." \
+            --model claude-opus-4.8 \
+            --effort max \
+            --context long_context \
             --yolo </dev/null
 
-      - name: Verify Copilot fix
+      - name: Require Copilot verification
         if: steps.stress_before.outcome == 'failure'
-        timeout-minutes: 75
-        working-directory: ui-tests
-        run: ./run-ctrl-c-stress.ps1 -Prefix after-copilot
+        run: |
+          if (!(Test-Path copilot-verification.ok)) {
+            throw 'Copilot did not prove 20 consecutive passes'
+          }
+          Get-Content copilot-verification.ok
 
       - name: Archive Copilot session state
         if: always() && steps.stress_before.outcome == 'failure'
@@ -146,6 +151,7 @@ jobs:
           path: |
             copilot-session.tar.gz
             copilot-diagnosis.md
+            copilot-verification.ok
 
       - name: Show logs
         if: always()

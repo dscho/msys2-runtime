@@ -20,9 +20,8 @@ Do not commit or push. Leave the verified working-tree diff for review.
 ## Goal
 
 Find and fix the root cause of any remaining flake in
-`ui-tests/ctrl-c.ahk`, then make the exact UI test pass three consecutive
-times on this runner. The workflow independently runs the final 20-pass
-gate after Copilot exits.
+`ui-tests/ctrl-c.ahk`, then make the shared stress script complete all 20
+iterations consecutively on this runner.
 
 Success requires all of the following:
 
@@ -32,8 +31,10 @@ Success requires all of the following:
 3. No run times out or leaves a Windows Terminal, OpenConsole, `sshd.exe`,
    Git, MSYS2 shell, or AutoHotkey process behind.
 4. `git diff --check` succeeds.
-5. `copilot-diagnosis.md` contains the evidence, final diff, and all three
+5. `copilot-diagnosis.md` contains the evidence, final diff, and all 20
    results.
+6. `copilot-verification.ok` exists and identifies the successful
+   20-iteration attempt.
 
 Do not claim success after a single pass.
 
@@ -119,6 +120,8 @@ conclusions.
 
 Do not terminate processes by name. Track the process IDs started by the
 test and only stop those specific processes when cleanup is required.
+Do not run verification detached or in the background. Wait for each
+stress-script invocation so its failure remains available for diagnosis.
 
 ### 4. Apply only a proven fix
 
@@ -130,23 +133,23 @@ preserve the result, revise the hypothesis, and continue.
 
 ### 5. Prove the flake fixed
 
-After a candidate passes once, run three consecutive iterations. Use unique
-paths such as:
+After a candidate passes once, remove any stale success marker and run the
+same stress script the workflow uses:
 
-```
-ui-tests/ctrl-c-verify-1
-%RUNNER_TEMP%\large-verify-1
-...
-ui-tests/ctrl-c-verify-3
-%RUNNER_TEMP%\large-verify-3
+```powershell
+Remove-Item copilot-verification.ok -ErrorAction SilentlyContinue
+& .\ui-tests\run-ctrl-c-stress.ps1 -Count 20 `
+  -Prefix copilot-attempt-1
 ```
 
-Capture each console log separately. After every iteration, verify that
-the expected processes exited and record duration, exit status, and final
-progress line.
+The script stops at the first failure and preserves separate stdout,
+stderr, and test logs for every completed iteration. If it fails, inspect
+that exact failure, revise the diagnosis, apply a surgical correction, and
+rerun the full script with a fresh prefix such as `copilot-attempt-2`.
 
-Any failure resets the consecutive-pass count to zero. Diagnose it and
-continue iterating within the session budget.
+Keep iterating until one invocation completes all 20 runs. Only then write
+`copilot-verification.ok` with the successful prefix and a concise summary.
+The workflow treats absence of this marker as failure.
 
 ## Final report
 
@@ -155,11 +158,12 @@ Before exiting, write `copilot-diagnosis.md` with:
 1. Root cause, with exact source lines.
 2. Evidence from the original failure and discriminating experiments.
 3. The minimal `git diff`.
-4. The exact three-run verification table.
+4. The exact 20-run verification table.
 5. Relevant successful log excerpts.
 6. Rejected hypotheses and why the evidence rejected them.
 7. Residual risks.
 
-If three consecutive passes cannot be achieved, do not claim a fix. Record
-every attempted change and failure, restore the best evidence-backed
-working tree, and state the cheapest next experiment.
+If 20 consecutive passes cannot be achieved, remove
+`copilot-verification.ok`, do not claim a fix, and record every attempted
+change and failure. Restore the best evidence-backed working tree and state
+the cheapest next experiment.
