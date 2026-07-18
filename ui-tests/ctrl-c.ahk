@@ -176,7 +176,7 @@ if (openSSHPath != '' and FileExist(openSSHPath . '\sshd.exe')) {
         return ComObjGet('winmgmts:').ExecNotificationQuery(query)
     }
 
-    WaitForCloneProcesses(events, clonePath, keyPath) {
+    WaitForCloneSsh(events, keyPath) {
         deadline := A_TickCount + 15000
         while A_TickCount < deadline {
             try event := events.NextEvent(deadline - A_TickCount)
@@ -187,22 +187,10 @@ if (openSSHPath != '' and FileExist(openSSHPath . '\sshd.exe')) {
                 continue
             sshCommandLine := ''
             try sshCommandLine := ssh.CommandLine
-            if !InStr(sshCommandLine, keyPath)
-                continue
-            ancestor := FindProcess(ssh.ParentProcessId)
-            loop 8 {
-                if !ancestor
-                    break
-                commandLine := ''
-                try commandLine := ancestor.CommandLine
-                if ancestor.Name == 'git.exe' &&
-                    InStr(commandLine, clonePath) {
-                    return [ancestor.ProcessId, ssh.ProcessId]
-                }
-                ancestor := FindProcess(ancestor.ParentProcessId)
-            }
+            if InStr(sshCommandLine, keyPath)
+                return ssh.ProcessId
         }
-        return [0, 0]
+        return 0
     }
 
     ; Set up SSH server
@@ -252,27 +240,23 @@ if (openSSHPath != '' and FileExist(openSSHPath . '\sshd.exe')) {
     sshStartEvents := WatchSshStarts()
     WinActivate('ahk_id ' . hwnd)
     Send('git -c core.sshCommand="ssh ' . sshOptions . '" clone ' . cloneOptions . '{Enter}')
-    cloneProcesses := WaitForCloneProcesses(
-        sshStartEvents, largeGitClonePath, workTreeMSYS . '/id_rsa')
-    cloneGitPID := cloneProcesses[1]
-    cloneSshPID := cloneProcesses[2]
-    if !cloneGitPID || !cloneSshPID
-        ExitWithError 'Timed out waiting for clone processes'
+    cloneSshPID := WaitForCloneSsh(
+        sshStartEvents, workTreeMSYS . '/id_rsa')
+    if !cloneSshPID
+        ExitWithError 'Timed out waiting for clone ssh.exe'
     Info('Clone ssh.exe started: ' . cloneSshPID)
     Info('Trying to interrupt clone')
     WinActivate('ahk_id ' . hwnd)
-    if !ProcessMatches(cloneGitPID, 'git.exe', largeGitClonePath) ||
-        !ProcessMatches(cloneSshPID, 'ssh.exe', workTreeMSYS . '/id_rsa')
+    if !ProcessMatches(cloneSshPID, 'ssh.exe', workTreeMSYS . '/id_rsa')
         ExitWithError 'Clone completed before Ctrl+C could be sent'
     Send('^C') ; interrupt clone
     deadline := A_TickCount + 15000
-    while (ProcessMatches(cloneGitPID, 'git.exe', largeGitClonePath) ||
-        ProcessMatches(cloneSshPID, 'ssh.exe', workTreeMSYS . '/id_rsa')) &&
+    while ProcessMatches(
+        cloneSshPID, 'ssh.exe', workTreeMSYS . '/id_rsa') &&
         A_TickCount < deadline
         Sleep 10
-    if ProcessMatches(cloneGitPID, 'git.exe', largeGitClonePath) ||
-        ProcessMatches(cloneSshPID, 'ssh.exe', workTreeMSYS . '/id_rsa')
-        ExitWithError 'Clone processes did not exit after Ctrl+C'
+    if ProcessMatches(cloneSshPID, 'ssh.exe', workTreeMSYS . '/id_rsa')
+        ExitWithError 'Clone ssh.exe did not exit after Ctrl+C'
     Info('clone was interrupted as desired')
 
     deadline := A_TickCount + 5000
