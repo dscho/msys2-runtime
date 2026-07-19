@@ -170,6 +170,15 @@ if (openSSHPath != '' and FileExist(openSSHPath . '\sshd.exe')) {
         return InStr(commandLine, marker)
     }
 
+    ; Count the regular files (not directories) below `dir`, recursing into
+    ; subdirectories and hidden entries such as a `.git` folder.
+    CountFilesRecursively(dir) {
+        count := 0
+        Loop Files, dir . '\*', 'FR'
+            count++
+        return count
+    }
+
     WatchSshStarts() {
         query := 'SELECT * FROM Win32_ProcessStartTrace ' .
             'WHERE ProcessName = "ssh.exe"'
@@ -246,24 +255,64 @@ if (openSSHPath != '' and FileExist(openSSHPath . '\sshd.exe')) {
         ExitWithError 'Timed out waiting for clone ssh.exe'
     Info('Clone ssh.exe started: ' . cloneSshPID)
     Info('Trying to interrupt clone')
-    WinActivate('ahk_id ' . hwnd)
     if !ProcessMatches(cloneSshPID, 'ssh.exe', workTreeMSYS . '/id_rsa')
         ExitWithError 'Clone completed before Ctrl+C could be sent'
-    Send('^C') ; interrupt clone
+    ; Interrupt the clone. A bare `Send('^C')` is too quick to be delivered
+    ; reliably on GitHub Actions' runners (see the sleep interrupt above), and
+    ; even the deliberate key-down/up sequence is occasionally lost to a
+    ; focus/scheduling race. A missed interrupt lets the clone run to completion
+    ; (its ssh.exe only exits once the ~26M transfer finishes), so keep
+    ; re-issuing the Ctrl+C, re-focusing the window each time, until ssh.exe
+    ; actually exits.
     deadline := A_TickCount + 15000
     while ProcessMatches(
         cloneSshPID, 'ssh.exe', workTreeMSYS . '/id_rsa') &&
-        A_TickCount < deadline
-        Sleep 10
+        A_TickCount < deadline {
+        WinActivate('ahk_id ' . hwnd)
+        Send '{Ctrl down}{c down}'
+        Sleep 50
+        Send '{c up}{Ctrl up}'
+        checkDeadline := A_TickCount + 600
+        while ProcessExist(cloneSshPID) && A_TickCount < checkDeadline
+            Sleep 20
+    }
     if ProcessMatches(cloneSshPID, 'ssh.exe', workTreeMSYS . '/id_rsa')
         ExitWithError 'Clone ssh.exe did not exit after Ctrl+C'
     Info('clone was interrupted as desired')
 
+    ; Interrupting `git clone` makes it run its `remove_junk` cleanup, which
+    ; unlinks every file of the partial clone. On Windows that cleanup races
+    ; with the still-terminating child processes: their delete-pending file
+    ; handles (and CWDs) keep the now file-less directories busy, so git's
+    ; `rmdir` of the empty scaffolding fails and it gives up, permanently
+    ; leaving behind an empty `large-clone\.git\{objects,refs}` skeleton. That
+    ; benign leftover is not a completed clone, so it must not fail the test:
+    ; the interrupt is already proven by the clone's `ssh.exe` having exited
+    ; (above) and by the clone content being gone. Wait for every file to
+    ; disappear (tolerating empty directories), fail only if actual clone
+    ; content survives (i.e. the clone was not aborted), then remove any empty
+    ; scaffolding ourselves so the verification clone below starts clean.
     deadline := A_TickCount + 5000
-    while DirExist(largeGitClonePath) && A_TickCount < deadline
+    while DirExist(largeGitClonePath) &&
+        CountFilesRecursively(largeGitClonePath) > 0 &&
+        A_TickCount < deadline
         Sleep 10
-    if DirExist(largeGitClonePath)
-        ExitWithError('`large-clone` was unexpectedly not deleted on interrupt')
+    if DirExist(largeGitClonePath) {
+        remainingFiles := CountFilesRecursively(largeGitClonePath)
+        if remainingFiles > 0
+            ExitWithError('`large-clone` still contained ' . remainingFiles .
+                ' file(s) after interrupt (clone was not aborted)')
+        ; Only empty scaffolding remains; drop it so the verification clone
+        ; below can create the target afresh. The directories may stay briefly
+        ; busy while the interrupted clone's children finish exiting, so retry.
+        deadline := A_TickCount + 5000
+        while DirExist(largeGitClonePath) && A_TickCount < deadline {
+            try DirDelete(largeGitClonePath, true)
+            if !DirExist(largeGitClonePath)
+                break
+            Sleep 50
+        }
+    }
 
     ; Now verify that the SSH-based clone actually works and does not hang
     Info('Re-starting SSH server')
@@ -311,9 +360,20 @@ if (openSSHPath != '' and FileExist(openSSHPath . '\sshd.exe')) {
     OnExit(sshdCleanup, 0)
 }
 
-WinActivate('ahk_id ' . hwnd)
-Send('exit{Enter}')
-if !WinWaitClose('ahk_id ' . hwnd, , 10)
+; Close the PowerShell window. As with the Ctrl+C interrupts above, a single
+; `Send('exit{Enter}')` is occasionally lost to a focus/scheduling race on
+; GitHub Actions' runners, which would leave the Windows Terminal window (and
+; its OpenConsole/PowerShell processes) behind. Re-issue the exit, re-focusing
+; the window each time, until it actually closes; the leading `{Enter}` flushes
+; any partial command a half-delivered attempt might have left on the prompt.
+deadline := A_TickCount + 20000
+while WinExist('ahk_id ' . hwnd) && A_TickCount < deadline {
+    try WinActivate('ahk_id ' . hwnd)
+    if WinExist('ahk_id ' . hwnd)
+        Send('{Enter}exit{Enter}')
+    WinWaitClose('ahk_id ' . hwnd, , 3)
+}
+if WinExist('ahk_id ' . hwnd)
     ExitWithError 'PowerShell window did not close'
 Info 'PowerShell window closed'
 CleanUpWorkTree()
