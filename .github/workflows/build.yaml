@@ -34,6 +34,8 @@ jobs:
           WINSUP=$PWD/x86_64-pc-cygwin/winsup &&
           sed -i 's|libexec/busybox/||g' $WINSUP/testsuite/Makefile &&
           /c/Program\ Files/Git/usr/bin/dos2unix winsup/testsuite/cygrun.sh &&
+          mkdir -p $WINSUP/testsuite/testinst/dev/mqueue &&
+          mkdir -p $WINSUP/testsuite/testinst/dev/shm &&
           cp $WINSUP/cygserver/cygserver.exe $WINSUP/testsuite/testinst/usr/bin/ &&
           (cd $WINSUP/testsuite/testinst/usr/bin &&
            PATH=$PWD:$WINDIR/system32
