@@ -6,56 +6,7 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    runs-on: windows-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-
-      - name: setup-msys2
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: MSYS
-          update: true
-          install: msys2-devel base-devel autotools cocom diffutils gcc gettext-devel libiconv-devel make mingw-w64-cross-crt mingw-w64-cross-gcc mingw-w64-cross-zlib perl zlib-devel xmlto docbook-xsl libzstd-devel
-
-      - name: Build
-        shell: msys2 {0}
-        run: |
-          (cd winsup && ./autogen.sh)
-          ./configure --disable-dependency-tracking --with-msys2-runtime-commit="$GITHUB_SHA"
-          make -j8
-
-      - name: Install
-        shell: msys2 {0}
-        run: |
-          make DESTDIR="$(pwd)"/_dest install
-
-      - name: Upload
-        uses: actions/upload-artifact@v7
-        with:
-          name: install
-          path: _dest/
-
-      - name: Build test programs
-        shell: msys2 {0}
-        run: |
-          make -C x86_64-pc-cygwin/winsup/testsuite -j8 \
-            CFLAGS="-O2 -pipe -ggdb -std=gnu89 -w" check_programs
-
-      - name: Bundle up worktree
-        shell: msys2 {0}
-        run: $WINDIR/system32/tar.exe -czf wt.tgz --exclude _dest --exclude .git --exclude wt.tgz .
-
-      - name: Upload worktree archive
-        uses: actions/upload-artifact@v7
-        with:
-          name: wt.tgz
-          path: wt.tgz
-
   cygwin-tests:
-    needs: [build]
     runs-on: windows-latest
     steps:
       - name: setup-msys2
@@ -66,10 +17,9 @@ jobs:
           install: msys2-devel base-devel diffutils make perl busybox cygutils
 
       - name: Download worktree archive
-        uses: actions/download-artifact@v7
-        with:
-          name: wt.tgz
-          path: wt.tgz
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh run download -n wt.tgz -R dscho/msys2-runtime 30502632110
 
       - name: Extract worktree
         shell: msys2 {0}
