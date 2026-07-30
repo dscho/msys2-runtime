@@ -32,6 +32,7 @@ jobs:
           export MAKEFLAGS=-j8 &&
           export MSYS=winsymlinks:nativestrict &&
           WINSUP=$PWD/x86_64-pc-cygwin/winsup &&
+          sed -i 's|libexec/busybox/||g' $WINSUP/testsuite/Makefile &&
           cp $WINSUP/cygserver/cygserver.exe $WINSUP/testsuite/testinst/usr/bin/ &&
           (cd $WINSUP/testsuite/testinst/usr/bin &&
            PATH=$PWD:$WINDIR/system32
