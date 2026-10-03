@@ -111,6 +111,13 @@ jobs:
       - name: Checkout diagnostic prompt
         uses: actions/checkout@v7
 
+      - name: Checkout pinned msys2-tests
+        uses: actions/checkout@v7
+        with:
+          repository: msys2/msys2-tests
+          ref: a5a6995b100ef2b09cd96b4c6262a573840b3af9
+          path: msys2-tests
+
       - id: msys2
         uses: msys2/setup-msys2@v2
         with:
@@ -144,32 +151,56 @@ jobs:
         shell: msys2 {0}
         run: uname -a
 
-      - name: Run MSYS-gcc tests
-        id: tests
-        timeout-minutes: 15
-        uses: msys2/msys2-tests@a5a6995b100ef2b09cd96b4c6262a573840b3af9
+      - name: Run CMake prerequisites
+        id: prerequisites
+        timeout-minutes: 8
+        shell: msys2 {0}
+        run: |
+          set -e -o pipefail
+          mkdir -p ci-diagnostics
+          for target in toolchain rust python; do
+            timeout -k 20s 5m make -C msys2-tests -j "$target" </dev/null 2>&1 \
+              | tee "ci-diagnostics/${target}.log"
+          done
+
+      - name: Exercise MSYS-gcc CMake test
+        id: cmake
+        timeout-minutes: 12
+        shell: msys2 {0}
+        run: |
+          set -e -o pipefail
+          printf '%s\n' '# MSYS-gcc CMake diagnosis' \
+            '' 'CMake test attempts have not yet been analyzed.' \
+            'Build artifact: msys2/msys2-runtime run 37014998883 (c0b496fb63).' \
+            > ci-diagnostics/copilot-diagnosis.md
+          for attempt in 1 2 3 4 5 6; do
+            printf 'Starting CMake attempt %s\n' "$attempt" | tee -a ci-diagnostics/cmake-attempts.log
+            if timeout -k 20s 180s make -C msys2-tests -j cmake </dev/null 2>&1 \
+              | tee "ci-diagnostics/cmake-${attempt}.log"; then
+              printf 'CMake attempt %s passed\n' "$attempt" | tee -a ci-diagnostics/cmake-attempts.log
+            else
+              result=$?
+              printf 'CMake attempt %s exited with status %s\n' "$attempt" "$result" \
+                | tee -a ci-diagnostics/cmake-attempts.log
+              exit "$result"
+            fi
+          done
 
       - name: Set up Copilot CLI
-        if: ${{ always() && (failure() || steps.tests.outcome == 'cancelled') }}
+        if: ${{ always() && steps.cmake.outcome != 'skipped' }}
         timeout-minutes: 5
         shell: bash
         run: |
-          mkdir -p ci-diagnostics
           npm install -g @github/copilot </dev/null 2>&1 | tee ci-diagnostics/copilot-install.log
 
       - name: Diagnose MSYS-gcc with Copilot
-        if: ${{ always() && (failure() || steps.tests.outcome == 'cancelled') }}
+        if: ${{ always() && steps.cmake.outcome != 'skipped' }}
         timeout-minutes: 90
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MSYS2_ARG_CONV_EXCL: '*'
         run: |
-          mkdir -p ci-diagnostics
-          printf '%s\n' '# MSYS-gcc diagnosis' \
-            '' 'The test job failed; Copilot has not yet analyzed the failure.' \
-            'Build artifact: msys2/msys2-runtime run 37014998883 (c0b496fb63).' \
-            > ci-diagnostics/copilot-diagnosis.md
           if copilot -p "Follow @.github/copilot-prompts/debug-msys-gcc.md exactly." \
             --model gpt-6.1-sol --effort max --context long_context \
             --yolo --no-ask-user --secret-env-vars GH_TOKEN \
@@ -183,7 +214,7 @@ jobs:
           fi
 
       - name: Upload Copilot diagnostics
-        if: ${{ always() && (failure() || steps.tests.outcome == 'cancelled') }}
+        if: ${{ always() && steps.prerequisites.outcome != 'skipped' }}
         uses: actions/upload-artifact@v7
         with:
           name: msys-gcc-copilot
