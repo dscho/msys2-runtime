@@ -98,7 +98,7 @@ jobs:
   debug-msys-gcc:
     if: ${{ github.repository == 'dscho/msys2-runtime' && github.ref == 'refs/heads/ci/copilot-msys-gcc-timeout-375-20261003' }}
     runs-on: windows-2025
-    timeout-minutes: 120
+    timeout-minutes: 100
     permissions:
       contents: read
       actions: read
@@ -165,7 +165,7 @@ jobs:
 
       - name: Exercise MSYS-gcc CMake test
         id: cmake
-        timeout-minutes: 12
+        timeout-minutes: 8
         shell: msys2 {0}
         run: |
           set -e -o pipefail
@@ -175,11 +175,13 @@ jobs:
             > ci-diagnostics/copilot-diagnosis.md
           for attempt in 1 2 3 4 5 6; do
             printf 'Starting CMake attempt %s\n' "$attempt" | tee -a ci-diagnostics/cmake-attempts.log
-            if timeout -k 20s 180s make -C msys2-tests -j cmake </dev/null 2>&1 \
-              | tee "ci-diagnostics/cmake-${attempt}.log"; then
+            if timeout -k 20s 180s make -C msys2-tests -j cmake \
+              </dev/null > "ci-diagnostics/cmake-${attempt}.log" 2>&1; then
+              cat "ci-diagnostics/cmake-${attempt}.log"
               printf 'CMake attempt %s passed\n' "$attempt" | tee -a ci-diagnostics/cmake-attempts.log
             else
               result=$?
+              cat "ci-diagnostics/cmake-${attempt}.log"
               printf 'CMake attempt %s exited with status %s\n' "$attempt" "$result" \
                 | tee -a ci-diagnostics/cmake-attempts.log
               exit "$result"
@@ -195,7 +197,7 @@ jobs:
 
       - name: Diagnose MSYS-gcc with Copilot
         if: ${{ always() && steps.cmake.outcome != 'skipped' }}
-        timeout-minutes: 90
+        timeout-minutes: 55
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -204,12 +206,15 @@ jobs:
           if copilot -p "Follow @.github/copilot-prompts/debug-msys-gcc.md exactly." \
             --model gpt-6.1-sol --effort max --context long_context \
             --yolo --no-ask-user --secret-env-vars GH_TOKEN \
-            --output-format json </dev/null 2>&1 | tee ci-diagnostics/copilot.log; then
-            printf '%s\n' 'Copilot exited successfully.' | tee -a ci-diagnostics/copilot.log
+            --output-format json </dev/null 2>&1 | tee ci-diagnostics/copilot.log \
+            | node .github/copilot-prompts/filter-ci-events.cjs \
+            | tee ci-diagnostics/copilot-readable.log; then
+            printf '%s\n' 'Copilot exited successfully.' \
+              | tee -a ci-diagnostics/copilot.log ci-diagnostics/copilot-readable.log
           else
             status=$?
             printf 'Copilot exited with status %s; partial findings and log are preserved.\n' "$status" \
-              | tee -a ci-diagnostics/copilot.log
+              | tee -a ci-diagnostics/copilot.log ci-diagnostics/copilot-readable.log
             exit "$status"
           fi
 

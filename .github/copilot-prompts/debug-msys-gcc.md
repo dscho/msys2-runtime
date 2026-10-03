@@ -34,22 +34,65 @@ The first fork diagnostic run passed this CMake target in 24 seconds, then
 failed in a different `runtime` symlink test. Do not investigate that
 later failure here.
 
+## Evidence from the previous focused CI session
+
+Fork run 37121023011 (job 111196992783) installed and loaded the same
+c0b496fb artifact DLL (SHA256
+6FBC247448D6DD2E5E4651F4773090EE32C6941EA46F3C855CEFB1F32E563E89)
+and the pinned tests. Its first CMake attempt stopped at
+`-- Detecting C compiler ABI info` for Ninja/UCRT. The 180-second timeout
+terminated `make`, but the tee pipeline did not return before the outer
+12-minute step deadline. Its Copilot session ran into the job's hard
+deadline before artifact upload; the saved job log contains partial
+checkpoints, not a verified fix.
+
+Those checkpoints establish **14 unchanged full CMake target successes**
+and **36 successful narrowed ABI configures interspersed with two
+90-second waits**. On the first live wait, the process tree had only
+cmd, Bash, and CMake, with NO compiler, linker, or Ninja child.
+GDB found CMake's main thread in libuv `poll -> select_stuff::wait`,
+and an MSYS `pipesel` thread in `PeekNamedPipe` at `select.cc:604`.
+That wait was before the ABI-start message. A second narrowed wait
+reached `try_compile` at `-- Detecting C compiler ABI info` with a
+similarly childless tree; the expanded GDB script aborted internally
+(exit 2816), so the selected fd and pipe-mode fields were NOT obtained.
+The next discriminating experiment is a minimal GDB inspection of that
+fd/handle on a live wait, to determine whether it is subprocess output
+or an internal libuv/signal pipe. Do not patch `PeekNamedPipe` based
+only on this stack, and do not repeat 14 broad passes before testing
+the unresolved question.
+
+A passing Git for Windows run
+(git-for-windows/msys2-runtime run 37015654781, job 110868776450)
+used the SAME test action SHA and runner image version 20260925.250.1,
+but loaded runtime 53a3dd31 instead of c0b496fb. Its source DESCENDS
+from c0b496fb, and the final `select.cc`, `fhandler/pipe.cc`, and
+`fhandler/console.cc` trees are identical between the two commits.
+Git for Windows also has distinct PTY, descriptor-setup, and path
+changes. One passing run does not show those changes fix this
+intermittent hang, especially after 14 full passes with c0b496fb.
+Treat that patch-set hypothesis as a candidate to discriminate, not
+an established cause. The upstream console-mode v18 and owner-exit v5
+fixes in msys2/msys2-runtime#368 are already present in both trees.
+
 **All files you create for the operator (scripts, logs, diffs, diagnostics)
 MUST go inside `$GITHUB_WORKSPACE/ci-diagnostics/`.** Inspect files under
 `msys2-tests` and the installed runtime as necessary, but copy relevant
 existing CMake logs into `ci-diagnostics/` BEFORE rerunning a test that
 overwrites its build directory. The workflow uploads that directory even
 when Copilot exits nonzero; the CLI's full stdout and stderr stream into
-`ci-diagnostics/copilot.log`. Do not copy tokens, credentials, environment
-dumps containing secrets, or the entire `~/.copilot` directory into artifacts.
+`ci-diagnostics/copilot.log`, with readable diagnosis checkpoints also
+streamed into `ci-diagnostics/copilot-readable.log` and the CI job log.
+Do not copy tokens, credentials, environment dumps containing secrets, or
+the entire `~/.copilot` directory into artifacts.
 
 Your findings MUST be written to
 `$GITHUB_WORKSPACE/ci-diagnostics/copilot-diagnosis.md`. It already contains
 a brief seed note. Replace it immediately with the observed CMake attempt
 statuses and the exact last progress line if one hung; then update it
 **after each meaningful observation or experiment, not only at the end**.
-An interrupted
-session or a late `exit 1` must never erase the analysis already completed.
+An interrupted session or a late `exit 1` must never erase the analysis
+already completed.
 If a late error occurs, record its exact command, exit status, and output
 and continue writing the diagnosis when possible. Do not use an unconditional
 `exit 1` as the last action of a diagnostic helper. Do NOT mark a fix as
@@ -111,10 +154,11 @@ clearly instead of claiming a fix.
 
 ### Iterate until proven
 
-Your session budget is approximately 90 minutes. Reserve at least ten
+Your session budget is approximately 45 minutes. Reserve at least ten
 minutes for final documentation and copying any patch and logs into
-`ci-diagnostics/`. A failed end-to-end verification is **information, not
-defeat**: refine the hypothesis, refine the fix, re-apply, re-run. Do not
+`ci-diagnostics/`; finish the diagnosis before 40 minutes have elapsed.
+A failed end-to-end verification is **information, not defeat**: refine
+the hypothesis, refine the fix, re-apply, re-run. Do not
 spend the whole session waiting on a hung child: give each subprocess a
 reasonable timeout, capture its output, and inspect its process tree while
 it is still hung. Preserve the original build/log evidence before any test
@@ -165,8 +209,10 @@ or upload anything besides the configured diagnostic artifact.
    attempt's status, the last forward-progress line and time if any hung,
    and the exact command. If all six attempts passed, label the hang
    NOT REPRODUCED in this runner; still investigate the intermittent
-   failure. Earlier failure logs are available via the run and job IDs
-   above if needed; fetch the full archive if the API truncates. Verify
+   failure using the prior live-wait evidence above. Do not waste the
+   session retrying unavailable GitHub CLI authentication or fetching
+   multi-megabyte historical logs: the earlier session's tool processes
+   could not access `GH_TOKEN` and its run log was truncated. Verify
    which runtime DLL was installed and which test SHA ran. Copy relevant
    CMake build records to `ci-diagnostics/` before another attempt.
 2. **Trace the stalled operation.** Follow the pinned `cmake/test.sh`,
@@ -179,8 +225,11 @@ or upload anything besides the configured diagnostic artifact.
 3. **Run a bounded reproducer.** In the same `MSYSTEM=MSYS` environment,
    rerun the CMake target or a narrower test of the exact stalled
    compiler command with a deadline; capture full stdout/stderr and
-   inspect the live process tree while it is stuck. If necessary, compare
-   the original action directory with the separate pinned checkout
+   inspect the live process tree while it is stuck. Prioritize inspecting
+   the selected pipe fd/handle with the minimal GDB command that succeeded
+   previously; the extended Python debugger script crashed and is not
+   trustworthy pipe-field evidence. If necessary, compare the original
+   action directory with the separate pinned checkout
    to test whether path or preceding action steps matter. Write the
    prediction, command, exit code, evidence, and implications immediately.
    Unexpectedly quick runs or a failing known-good baseline require
