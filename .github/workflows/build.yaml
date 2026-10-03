@@ -7,6 +7,7 @@ permissions:
 
 jobs:
   build:
+    if: ${{ github.repository != 'dscho/msys2-runtime' || github.ref != 'refs/heads/ci/copilot-msys-gcc-timeout-375-20261003' }}
     runs-on: windows-latest
 
     steps:
@@ -39,6 +40,7 @@ jobs:
           path: _dest/
 
   generate-msys2-tests-matrix:
+    if: ${{ github.repository != 'dscho/msys2-runtime' || github.ref != 'refs/heads/ci/copilot-msys-gcc-timeout-375-20261003' }}
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
@@ -93,3 +95,93 @@ jobs:
       - name: Run tests
         uses: msys2/msys2-tests@main
 
+  debug-msys-gcc:
+    if: ${{ github.repository == 'dscho/msys2-runtime' && github.ref == 'refs/heads/ci/copilot-msys-gcc-timeout-375-20261003' }}
+    runs-on: windows-2025
+    timeout-minutes: 120
+    env:
+      CC: gcc
+      CXX: g++
+      FC: gfortran
+    steps:
+      - name: Checkout diagnostic prompt
+        uses: actions/checkout@v7
+
+      - id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          update: true
+          install: meson ninja cmake make gcc python python-setuptools python-setuptools-rust cython autotools ruby perl mingw-w64-cross-gcc mingw-w64-cross-mingwarm64-gcc gdb git asciidoctor gettext-devel zsh fish rust openssh patch
+
+      - name: Add staging repo
+        shell: msys2 {0}
+        run: |
+          sed -i '1s|^|[staging]\nServer = https://repo.msys2.org/staging/\nSigLevel = Never\n|' /etc/pacman.conf
+
+      - name: Update using staging
+        shell: pwsh
+        run: |
+          msys2 -c 'pacman --noconfirm -Suuy'
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          msys2 -c 'pacman --noconfirm -Suu'
+
+      - name: Reuse successful build artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: install
+          repository: msys2/msys2-runtime
+          run-id: 37014998883
+          github-token: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          path: ${{ steps.msys2.outputs.msys2-location }}
+
+      - name: Check installed runtime
+        shell: msys2 {0}
+        run: uname -a
+
+      - name: Run MSYS-gcc tests
+        id: tests
+        timeout-minutes: 15
+        uses: msys2/msys2-tests@a5a6995b100ef2b09cd96b4c6262a573840b3af9
+
+      - name: Set up Copilot CLI
+        if: ${{ always() && (failure() || steps.tests.outcome == 'cancelled') }}
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          mkdir -p ci-diagnostics
+          npm install -g @github/copilot </dev/null 2>&1 | tee ci-diagnostics/copilot-install.log
+
+      - name: Diagnose MSYS-gcc with Copilot
+        if: ${{ always() && (failure() || steps.tests.outcome == 'cancelled') }}
+        timeout-minutes: 90
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          MSYS2_ARG_CONV_EXCL: '*'
+        run: |
+          mkdir -p ci-diagnostics
+          printf '%s\n' '# MSYS-gcc diagnosis' \
+            '' 'The test job failed; Copilot has not yet analyzed the failure.' \
+            'Build artifact: msys2/msys2-runtime run 37014998883 (c0b496fb63).' \
+            > ci-diagnostics/copilot-diagnosis.md
+          if copilot -p "Follow @.github/copilot-prompts/debug-msys-gcc.md exactly." \
+            --model gpt-6.1-sol --effort max --context long_context \
+            --yolo --no-ask-user --secret-env-vars GH_TOKEN \
+            --output-format json </dev/null 2>&1 | tee ci-diagnostics/copilot.log; then
+            printf '%s\n' 'Copilot exited successfully.' | tee -a ci-diagnostics/copilot.log
+          else
+            status=$?
+            printf 'Copilot exited with status %s; partial findings and log are preserved.\n' "$status" \
+              | tee -a ci-diagnostics/copilot.log
+            exit "$status"
+          fi
+
+      - name: Upload Copilot diagnostics
+        if: ${{ always() && (failure() || steps.tests.outcome == 'cancelled') }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: msys-gcc-copilot
+          path: ci-diagnostics/
+          if-no-files-found: error
