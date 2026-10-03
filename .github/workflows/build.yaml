@@ -99,6 +99,10 @@ jobs:
     if: ${{ github.repository == 'dscho/msys2-runtime' && github.ref == 'refs/heads/ci/copilot-msys-gcc-timeout-375-20261003' }}
     runs-on: windows-2025
     timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read
+      copilot-requests: write
     env:
       CC: gcc
       CXX: g++
@@ -133,7 +137,7 @@ jobs:
           name: install
           repository: msys2/msys2-runtime
           run-id: 37014998883
-          github-token: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           path: ${{ steps.msys2.outputs.msys2-location }}
 
       - name: Check installed runtime
@@ -158,7 +162,7 @@ jobs:
         timeout-minutes: 90
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MSYS2_ARG_CONV_EXCL: '*'
         run: |
           mkdir -p ci-diagnostics
