@@ -7,8 +7,8 @@ permissions:
 
 jobs:
   build:
-    if: ${{ github.repository != 'dscho/msys2-runtime' || github.ref != 'refs/heads/ci/copilot-msys-gcc-timeout-375-20261003' }}
     runs-on: windows-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout code
@@ -95,20 +95,27 @@ jobs:
       - name: Run tests
         uses: msys2/msys2-tests@main
 
-  debug-msys-gcc:
+  base-address-msys-gcc:
     if: ${{ github.repository == 'dscho/msys2-runtime' && github.ref == 'refs/heads/ci/copilot-msys-gcc-timeout-375-20261003' }}
+    needs: build
+    name: MSYS-gcc base-address (${{ matrix.runtime }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [control, base-0x210040000]
     runs-on: windows-2025
-    timeout-minutes: 100
+    timeout-minutes: 35
     permissions:
       contents: read
       actions: read
-      copilot-requests: write
     env:
       CC: gcc
       CXX: g++
       FC: gfortran
+      RUNTIME: ${{ matrix.runtime }}
+      EXPECTED_BASE: ${{ matrix.runtime == 'control' && '0000000180040000' || '0000000210040000' }}
     steps:
-      - name: Checkout diagnostic prompt
+      - name: Checkout experiment
         uses: actions/checkout@v7
 
       - name: Checkout pinned msys2-tests
@@ -118,8 +125,22 @@ jobs:
           ref: a5a6995b100ef2b09cd96b4c6262a573840b3af9
           path: msys2-tests
 
+      - name: Initialize comparison evidence
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path ci-diagnostics | Out-Null
+          @(
+            "runtime=$env:RUNTIME"
+            "workflow_revision=$env:GITHUB_SHA"
+            'control_revision=0eed0a44c3b8366ea17b2f0ddca0c2d0eeb429a7'
+            'control_artifact=msys2/msys2-runtime/37015007624/install'
+            'tests_revision=a5a6995b100ef2b09cd96b4c6262a573840b3af9'
+            "runner_image=$env:ImageOS"
+            "runner_image_version=$env:ImageVersion"
+          ) | Set-Content ci-diagnostics/provenance.log
+
       - id: msys2
-        uses: msys2/setup-msys2@v2
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e
         with:
           msystem: MSYS
           update: true
@@ -138,18 +159,30 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           msys2 -c 'pacman --noconfirm -Suu'
 
-      - name: Reuse successful build artifact
+      - name: Install selected runtime artifact
         uses: actions/download-artifact@v8
         with:
           name: install
-          repository: msys2/msys2-runtime
-          run-id: 37014998883
+          repository: ${{ matrix.runtime == 'control' && 'msys2/msys2-runtime' || github.repository }}
+          run-id: ${{ matrix.runtime == 'control' && '37015007624' || github.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: ${{ steps.msys2.outputs.msys2-location }}
 
-      - name: Check installed runtime
+      - name: Verify selected runtime and base address
+        timeout-minutes: 2
         shell: msys2 {0}
-        run: uname -a
+        run: |
+          set -e -o pipefail
+          {
+            uname -a
+            sha256sum /usr/bin/msys-2.0.dll
+            pacman -Q
+          } </dev/null 2>&1 | tee ci-diagnostics/runtime.log
+          objdump -p /usr/bin/msys-2.0.dll > ci-diagnostics/runtime-pe.log
+          image_base=$(sed -n 's/^ImageBase[[:space:]]*//p' ci-diagnostics/runtime-pe.log)
+          printf 'ImageBase=%s expected=%s\n' "$image_base" "$EXPECTED_BASE" \
+            | tee -a ci-diagnostics/runtime.log
+          test "$image_base" = "$EXPECTED_BASE"
 
       - name: Run CMake prerequisites
         id: prerequisites
@@ -157,71 +190,78 @@ jobs:
         shell: msys2 {0}
         run: |
           set -e -o pipefail
-          mkdir -p ci-diagnostics
           for target in toolchain rust python; do
-            timeout -k 20s 5m make -C msys2-tests -j "$target" </dev/null 2>&1 \
+            make -C msys2-tests -j "$target" </dev/null 2>&1 \
               | tee "ci-diagnostics/${target}.log"
           done
 
-      - name: Exercise MSYS-gcc CMake test
+      - name: Repeat the original MSYS-gcc CMake target
         id: cmake
-        timeout-minutes: 8
-        shell: msys2 {0}
+        timeout-minutes: 15
+        shell: pwsh
         run: |
-          set -e -o pipefail
-          printf '%s\n' '# MSYS-gcc CMake diagnosis' \
-            '' 'CMake test attempts have not yet been analyzed.' \
-            'Build artifact: msys2/msys2-runtime run 37014998883 (c0b496fb63).' \
-            > ci-diagnostics/copilot-diagnosis.md
-          for attempt in 1 2 3 4 5 6; do
-            printf 'Starting CMake attempt %s\n' "$attempt" | tee -a ci-diagnostics/cmake-attempts.log
-            if timeout -k 20s 180s make -C msys2-tests -j cmake \
-              </dev/null > "ci-diagnostics/cmake-${attempt}.log" 2>&1; then
-              cat "ci-diagnostics/cmake-${attempt}.log"
-              printf 'CMake attempt %s passed\n' "$attempt" | tee -a ci-diagnostics/cmake-attempts.log
-            else
-              result=$?
-              cat "ci-diagnostics/cmake-${attempt}.log"
-              printf 'CMake attempt %s exited with status %s\n' "$attempt" "$result" \
-                | tee -a ci-diagnostics/cmake-attempts.log
-              exit "$result"
-            fi
-          done
+          $ErrorActionPreference = 'Stop'
+          $env:MSYSTEM = 'MSYS'
+          $wrapper = (Get-Command msys2).Source
+          $root = (Resolve-Path ci-diagnostics).Path
+          $results = Join-Path $root 'cmake-results.csv'
+          'attempt,result,exit_code,seconds,ctest_passes' | Set-Content $results
+          for ($attempt = 1; $attempt -le 20; $attempt++) {
+            $log = Join-Path $root "cmake-$attempt.log"
+            "Starting attempt $attempt at $([DateTime]::UtcNow.ToString('o'))" |
+              Tee-Object -FilePath ci-diagnostics/cmake-attempts.log -Append
+            $arguments = '/d /s /c ""{0}" -c "make -C msys2-tests -j cmake" <NUL >"{1}" 2>&1"' -f $wrapper, $log
+            $timer = [Diagnostics.Stopwatch]::StartNew()
+            $process = Start-Process -FilePath $env:ComSpec -ArgumentList $arguments `
+              -WorkingDirectory $env:GITHUB_WORKSPACE -NoNewWindow -PassThru
+            $finished = $process.WaitForExit(120000)
+            $timer.Stop()
+            $process.Refresh()
+            $exitCode = if ($finished) { $process.ExitCode } else { 124 }
+            $passes = @(Select-String -LiteralPath $log -Pattern '^100% tests passed, 0 tests failed out of').Count
+            $result = if (-not $finished) { 'timeout' } elseif ($exitCode -ne 0) {
+              'failure'
+            } elseif ($passes -ne 8) { 'incomplete' } else { 'pass' }
+            "$attempt,$result,$exitCode,$([int]$timer.Elapsed.TotalSeconds),$passes" |
+              Add-Content $results
+            Copy-Item -LiteralPath msys2-tests/cmake -Destination "$root/cmake-$attempt-tree" -Recurse
+            Get-Content -LiteralPath $log
+            if ($result -ne 'pass') {
+              Get-CimInstance Win32_Process -OperationTimeoutSec 10 |
+                Select-Object ProcessId,ParentProcessId,Name,ExecutablePath |
+                Format-List | Out-File "$root/cmake-$attempt-processes.log"
+              throw "CMake attempt ${attempt}: $result (exit=$exitCode, CTest passes=$passes/8); evidence saved."
+            }
+          }
 
-      - name: Set up Copilot CLI
+      - name: Record comparison outcome
         if: ${{ always() && steps.cmake.outcome != 'skipped' }}
-        timeout-minutes: 5
-        shell: bash
+        shell: pwsh
         run: |
-          npm install -g @github/copilot </dev/null 2>&1 | tee ci-diagnostics/copilot-install.log
+          @(
+            "# MSYS-gcc base-address experiment: $env:RUNTIME"
+            ''
+            'An attempt passes only with exit 0 and all eight CTest success lines.'
+            'Candidate passes without a reproduced control hang are inconclusive.'
+            ''
+            '```csv'
+          ) | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          if (Test-Path -LiteralPath ci-diagnostics/cmake-results.csv) {
+            Get-Content ci-diagnostics/cmake-results.csv |
+              Tee-Object -FilePath ci-diagnostics/comparison-results.log |
+              Out-File $env:GITHUB_STEP_SUMMARY -Append
+          } else {
+            Write-Warning 'No attempt ledger was created; inspect the CMake step failure.'
+            'No attempt ledger was created; inspect the CMake step failure.' |
+              Out-File $env:GITHUB_STEP_SUMMARY -Append
+          }
+          '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append
 
-      - name: Diagnose MSYS-gcc with Copilot
-        if: ${{ always() && steps.cmake.outcome != 'skipped' }}
-        timeout-minutes: 55
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MSYS2_ARG_CONV_EXCL: '*'
-        run: |
-          if copilot -p "Follow @.github/copilot-prompts/debug-msys-gcc.md exactly." \
-            --model gpt-6.1-sol --effort max --context long_context \
-            --yolo --no-ask-user --secret-env-vars GH_TOKEN \
-            --output-format json </dev/null 2>&1 | tee ci-diagnostics/copilot.log \
-            | node .github/copilot-prompts/filter-ci-events.cjs \
-            | tee ci-diagnostics/copilot-readable.log; then
-            printf '%s\n' 'Copilot exited successfully.' \
-              | tee -a ci-diagnostics/copilot.log ci-diagnostics/copilot-readable.log
-          else
-            status=$?
-            printf 'Copilot exited with status %s; partial findings and log are preserved.\n' "$status" \
-              | tee -a ci-diagnostics/copilot.log ci-diagnostics/copilot-readable.log
-            exit "$status"
-          fi
-
-      - name: Upload Copilot diagnostics
-        if: ${{ always() && steps.prerequisites.outcome != 'skipped' }}
+      - name: Upload comparison evidence
+        if: ${{ always() }}
+        timeout-minutes: 3
         uses: actions/upload-artifact@v7
         with:
-          name: msys-gcc-copilot
+          name: msys-gcc-base-address-${{ matrix.runtime }}
           path: ci-diagnostics/
           if-no-files-found: error
