@@ -218,7 +218,7 @@ jobs:
             $timer.Stop()
             $process.Refresh()
             $exitCode = if ($finished) { $process.ExitCode } else { 124 }
-            $passes = @(Select-String -LiteralPath $log -Pattern '^100% tests passed, 0 tests failed out of').Count
+            $passes = @(Select-String -LiteralPath $log -Pattern '^100% tests passed out of 1$').Count
             $result = if (-not $finished) { 'timeout' } elseif ($exitCode -ne 0) {
               'failure'
             } elseif ($passes -ne 8) { 'incomplete' } else { 'pass' }
