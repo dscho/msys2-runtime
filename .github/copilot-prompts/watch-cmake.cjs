@@ -52,7 +52,7 @@ async function main() {
 
   while (!fs.existsSync(path.join(output, 'watcher-stop'))) {
     const logs = fs.readdirSync(output).filter(name =>
-      /^cmake-\d+\.log$/.test(name)).sort();
+      /^cmake-\d+(?:\.stderr)?\.log$/.test(name)).sort();
     const current = logs.map(name =>
       `${name}:${fs.statSync(path.join(output, name)).size}`).join(';');
     if (current !== progress) {

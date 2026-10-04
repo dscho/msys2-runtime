@@ -25,15 +25,22 @@ phase in 14 seconds. An independent msys2/msys2-tests scheduled run,
 do not assume these failures have the same underlying cause).
 
 Working directory: the checked-out msys2-runtime repository at
-`$GITHUB_WORKSPACE`. The test repository is checked out at
+`$GITHUB_WORKSPACE`. The test source repository is checked out at
 `$GITHUB_WORKSPACE/msys2-tests`, pinned to
 msys2/msys2-tests@a5a6995b100ef2b09cd96b4c6262a573840b3af9.
-The original action ran under the runner's `_actions/msys2/msys2-tests`
-directory. The focused reproducer uses a different checkout path; record
-that difference when comparing results. It invokes
-`make -C msys2-tests -j cmake` under the `msys2 {0}` shell with `MSYSTEM=MSYS`,
+Its committed blobs are archived into the original action directory
+`_actions/msys2/msys2-tests/main`, recorded in `MSYS2_TESTS` and
+`provenance.log`. This avoids native Git's CRLF checkout conversion.
+The reproducer sources that directory's `group_helper.sh` and invokes
+`make -C "$tests" -j cmake` through the original `msys2 {0}` wrapper with `MSYSTEM=MSYS`,
 `CC=gcc`, `CXX=g++`, and `FC=gfortran`. Its CMake test script loops over
 Ninja and Unix Makefiles, building native and MinGW cross-compiled samples.
+Like the original runner, native stdin is a closed pipe and stdout/stderr
+are separate pipes, drained asynchronously to `cmake-N.log` and
+`cmake-N.stderr.log`. The command script and per-attempt native process
+records are preserved. Previous focused runs used a separate test path,
+direct file redirection, and omitted the group helper; do not claim those
+execution contexts were identical.
 The first fork diagnostic run passed this CMake target in 24 seconds, then
 failed in a different `runtime` symlink test. Do not investigate that
 later failure here.
@@ -214,7 +221,10 @@ Every subprocess you launch from diagnostic helpers MUST:
 
 Do not rely on MSYS `timeout` to release a native CMake process or an output
 pipeline; that channel failed in earlier sessions. Use a native PowerShell
-wait, log directly to files, and leave a timed-out target alive for inspection.
+wait and independent native pipe drains to files, leaving a timed-out target
+alive for inspection. Preserve both stdout and stderr. A recorded
+`output-timeout` means the native parent exited but its output pipes did not
+close; it is not automatically a CMake ABI stall.
 For further full-target attempts use `ci-diagnostics/cmake-N.log` with fresh
 numeric N values so the background watcher can observe forward progress.
 After every complete attempt require exit0 and exactly eight lines matching
@@ -270,9 +280,9 @@ or upload anything besides the configured diagnostic artifact.
    extended debugger script crashed; do not blindly reuse it. Take another
    bounded stack snapshot to distinguish a persistent wait from sampling.
    Do not replace a full-target stall with an unlabelled narrowed experiment.
-   If necessary, compare the original
-   action directory with the separate pinned checkout
-   to test whether path or preceding action steps matter. Write the
+   Compare this original-path, pipe-backed execution with the earlier
+   separate-checkout, direct-file attempts before attributing differences
+   to the runtime. Write the
    prediction, command, exit code, evidence, and implications immediately.
    Unexpectedly quick runs or a failing known-good baseline require
    checking artifact timestamps, DLL versions, and executed binaries,

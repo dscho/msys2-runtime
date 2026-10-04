@@ -198,15 +198,42 @@ jobs:
             | tee -a ci-diagnostics/runtime.log
           test "$image_base" = "$EXPECTED_BASE"
 
+      - name: Prepare the original test action path
+        timeout-minutes: 2
+        shell: pwsh
+        env:
+          MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $root = (Resolve-Path ci-diagnostics).Path
+          $tests = Join-Path (Split-Path $env:RUNNER_TEMP -Parent) '_actions/msys2/msys2-tests/main'
+          if (Test-Path -LiteralPath $tests) {
+            throw "Refusing to overwrite an existing action directory: $tests"
+          }
+          $revision = (git -C msys2-tests rev-parse HEAD).Trim()
+          if ($revision -ne 'a5a6995b100ef2b09cd96b4c6262a573840b3af9') {
+            throw "Unexpected test revision: $revision"
+          }
+          git -C msys2-tests archive --format=tar --output="$root/msys2-tests.tar" $revision
+          New-Item -ItemType Directory -Path $tests -Force | Out-Null
+          & "$env:MSYS2_ROOT/usr/bin/bsdtar.exe" -xf "$root/msys2-tests.tar" -C $tests
+          "MSYS2_TESTS=$tests" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          @("tests_action_path=$tests", "tests_archive_revision=$revision") |
+            Tee-Object -FilePath "$root/provenance.log" -Append
+
       - name: Run CMake prerequisites
         id: prerequisites
         timeout-minutes: 8
         shell: msys2 {0}
         run: |
           set -e -o pipefail
+          tests=$(cygpath -u "$MSYS2_TESTS")
           for target in toolchain rust python; do
-            make -C msys2-tests -j "$target" </dev/null 2>&1 \
-              | tee "ci-diagnostics/${target}.log"
+            (
+              . "$tests/group_helper.sh" "test: $target"
+              make -C "$tests" -j "$target"
+            ) </dev/null 2>&1 | tee "ci-diagnostics/${target}.log"
           done
 
       - name: Set up Copilot CLI
@@ -234,6 +261,12 @@ jobs:
           $watcher = $null
           $failures = [Collections.Generic.List[string]]::new()
           try {
+            $targetScript = Join-Path $root 'cmake-target.sh'
+            [IO.File]::WriteAllText($targetScript, @'
+          tests=$(cygpath -u "$MSYS2_TESTS")
+          . "$tests/group_helper.sh" "test: cmake"
+          make -C "$tests" -j cmake
+          '@, [Text.Encoding]::ASCII)
             $watcher = Start-Process -FilePath (Get-Command node).Source `
               -ArgumentList "`"$watcherScript`" `"$env:MSYS2_ROOT`" `"$root`"" `
               -NoNewWindow -PassThru `
@@ -259,24 +292,55 @@ jobs:
                 throw 'Watcher exited or full-target batch deadline reached; evidence saved.'
               }
               $log = Join-Path $root "cmake-$attempt.log"
+              $errorLog = Join-Path $root "cmake-$attempt.stderr.log"
               "Starting attempt $attempt at $([DateTime]::UtcNow.ToString('o'))" |
                 Tee-Object -FilePath ci-diagnostics/cmake-attempts.log -Append
-              $arguments = '/d /s /c ""{0}" -c "make -C msys2-tests -j cmake" <NUL >"{1}" 2>&1"' -f $wrapper, $log
+              $processInfo = [Diagnostics.ProcessStartInfo]::new($env:ComSpec)
+              $processInfo.UseShellExecute = $false
+              $processInfo.WorkingDirectory = $env:GITHUB_WORKSPACE
+              $processInfo.Arguments = '/d /s /c ""{0}" "{1}""' -f $wrapper, $targetScript
+              $processInfo.RedirectStandardInput = $true
+              $processInfo.RedirectStandardOutput = $true
+              $processInfo.RedirectStandardError = $true
+              $stdoutLog = [IO.FileStream]::new($log, [IO.FileMode]::Create,
+                [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite, 1, [IO.FileOptions]::Asynchronous)
+              $stderrLog = [IO.FileStream]::new($errorLog, [IO.FileMode]::Create,
+                [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite, 1, [IO.FileOptions]::Asynchronous)
               $timer = [Diagnostics.Stopwatch]::StartNew()
-              $process = Start-Process -FilePath $env:ComSpec -ArgumentList $arguments `
-                -WorkingDirectory $env:GITHUB_WORKSPACE -NoNewWindow -PassThru
+              $process = [Diagnostics.Process]::Start($processInfo)
+              $process.StandardInput.Close()
+              $stdoutCopy = $process.StandardOutput.BaseStream.CopyToAsync($stdoutLog)
+              $stderrCopy = $process.StandardError.BaseStream.CopyToAsync($stderrLog)
               $finished = $process.WaitForExit(120000)
+              $outputComplete = $finished -and [Threading.Tasks.Task]::WaitAll(
+                [Threading.Tasks.Task[]]@($stdoutCopy, $stderrCopy), 10000)
               $timer.Stop()
-              $process.Refresh()
+              if ($outputComplete) {
+                $stdoutLog.Dispose()
+                $stderrLog.Dispose()
+              }
               $exitCode = if ($finished) { $process.ExitCode } else { $null }
               $passes = @(Select-String -LiteralPath $log -Pattern '^100% tests passed out of 1$').Count
-              $result = if (-not $finished) { 'timeout' } elseif ($exitCode -ne 0) {
+              $result = if (-not $finished) { 'timeout' } elseif (-not $outputComplete) {
+                'output-timeout'
+              } elseif ($exitCode -ne 0) {
                 'failure'
               } elseif ($passes -ne 8) { 'incomplete' } else { 'pass' }
               "$attempt,$result,$exitCode,$([int]$timer.Elapsed.TotalSeconds),$passes" |
                 Add-Content $results
-              Copy-Item -LiteralPath msys2-tests/cmake -Destination "$root/cmake-$attempt-tree" -Recurse
+              @{
+                pid = $process.Id
+                executable = $processInfo.FileName
+                arguments = $processInfo.Arguments
+                script = $targetScript
+                outputComplete = $outputComplete
+                exitCode = $exitCode
+                stdout = $log
+                stderr = $errorLog
+              } | ConvertTo-Json | Set-Content "$root/cmake-$attempt-process.json"
+              Copy-Item -LiteralPath "$env:MSYS2_TESTS/cmake" -Destination "$root/cmake-$attempt-tree" -Recurse
               Get-Content -LiteralPath $log
+              Get-Content -LiteralPath $errorLog
               if ($result -ne 'pass') {
                 Get-CimInstance Win32_Process -OperationTimeoutSec 10 |
                   Select-Object ProcessId,ParentProcessId,Name,ExecutablePath |
