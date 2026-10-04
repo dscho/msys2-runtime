@@ -3,7 +3,7 @@
 ## Context
 
 You are running in the `debug-msys-gcc` job on a GitHub Actions
-`windows-2025` runner. The `Repeat the original MSYS-gcc CMake target` step
+`windows-2025` runner. The `Run CMake and investigate with the live watcher` step
 runs up to twenty bounded full CMake targets after the original toolchain, rust,
 and python prerequisites. It may have timed out, failed, or passed every
 attempt. Determine which happened; do not assume a hang was reproduced.
@@ -41,7 +41,12 @@ later failure here.
 ## Live capture and previous evidence
 
 The native Node watcher `.github/copilot-prompts/watch-cmake.cjs` is already
-running independently of this Copilot session. It scopes processes to
+started in the SAME owning PowerShell step as this Copilot session. The
+owner stays alive until analysis finishes: a previous run's watcher
+disappeared between steps without an error record, consistent with the
+runner's descendant cleanup on shell exit. Verify current watcher liveness
+and its saved records; do not assume readiness proves continued operation.
+It scopes processes to
 `$MSYS2_ROOT/usr/bin/cmake.exe` created after watcher startup. After the same
 process has survived 45 seconds and the full-target logs have made no progress
 for 45 seconds, it saves `hang-PID.json`, the native process inventory, and

@@ -209,62 +209,138 @@ jobs:
               | tee "ci-diagnostics/${target}.log"
           done
 
-      - name: Repeat the original MSYS-gcc CMake target
+      - name: Set up Copilot CLI
+        if: ${{ always() && steps.prerequisites.outcome == 'success' }}
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          npm install -g @github/copilot </dev/null 2>&1 | tee ci-diagnostics/copilot-install.log
+
+      - name: Run CMake and investigate with the live watcher
         id: cmake
-        timeout-minutes: 12
+        if: ${{ always() && steps.prerequisites.outcome == 'success' }}
+        timeout-minutes: 40
         shell: pwsh
         env:
           MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MSYS2_ARG_CONV_EXCL: '*'
         run: |
           $ErrorActionPreference = 'Stop'
           $env:MSYSTEM = 'MSYS'
           $wrapper = (Get-Command msys2).Source
           $root = (Resolve-Path ci-diagnostics).Path
           $watcherScript = Join-Path $env:GITHUB_WORKSPACE '.github/copilot-prompts/watch-cmake.cjs'
-          $watcher = Start-Process -FilePath (Get-Command node).Source `
-            -ArgumentList "`"$watcherScript`" `"$env:MSYS2_ROOT`" `"$root`"" `
-            -NoNewWindow -PassThru `
-            -RedirectStandardOutput "$root/watcher.stdout.log" `
-            -RedirectStandardError "$root/watcher.stderr.log"
-          $watcher.Id | Set-Content "$root/watcher.pid"
-          $readyDeadline = [DateTime]::UtcNow.AddSeconds(30)
-          while (-not (Test-Path "$root/watcher-ready.json")) {
-            if ($watcher.HasExited -or [DateTime]::UtcNow -ge $readyDeadline) {
-              Get-Content "$root/watcher.stderr.log"
-              throw 'CMake watcher did not become ready; evidence saved.'
+          $watcher = $null
+          $failures = [Collections.Generic.List[string]]::new()
+          try {
+            $watcher = Start-Process -FilePath (Get-Command node).Source `
+              -ArgumentList "`"$watcherScript`" `"$env:MSYS2_ROOT`" `"$root`"" `
+              -NoNewWindow -PassThru `
+              -RedirectStandardOutput "$root/watcher.stdout.log" `
+              -RedirectStandardError "$root/watcher.stderr.log"
+            $watcher.Id | Set-Content "$root/watcher.pid"
+            $readyDeadline = [DateTime]::UtcNow.AddSeconds(30)
+            while (-not (Test-Path "$root/watcher-ready.json")) {
+              if ($watcher.HasExited -or [DateTime]::UtcNow -ge $readyDeadline) {
+                Get-Content "$root/watcher.stderr.log"
+                throw 'CMake watcher did not become ready; evidence saved.'
+              }
+              Start-Sleep -Seconds 1
+              $watcher.Refresh()
             }
-            Start-Sleep -Seconds 1
-            $watcher.Refresh()
+            Get-Content "$root/watcher-ready.json"
+            $results = Join-Path $root 'cmake-results.csv'
+            'attempt,result,exit_code,seconds,ctest_passes' | Set-Content $results
+            $attemptDeadline = [DateTime]::UtcNow.AddMinutes(12)
+            for ($attempt = 1; $attempt -le 20; $attempt++) {
+              $watcher.Refresh()
+              if ($watcher.HasExited -or [DateTime]::UtcNow.AddSeconds(120) -ge $attemptDeadline) {
+                throw 'Watcher exited or full-target batch deadline reached; evidence saved.'
+              }
+              $log = Join-Path $root "cmake-$attempt.log"
+              "Starting attempt $attempt at $([DateTime]::UtcNow.ToString('o'))" |
+                Tee-Object -FilePath ci-diagnostics/cmake-attempts.log -Append
+              $arguments = '/d /s /c ""{0}" -c "make -C msys2-tests -j cmake" <NUL >"{1}" 2>&1"' -f $wrapper, $log
+              $timer = [Diagnostics.Stopwatch]::StartNew()
+              $process = Start-Process -FilePath $env:ComSpec -ArgumentList $arguments `
+                -WorkingDirectory $env:GITHUB_WORKSPACE -NoNewWindow -PassThru
+              $finished = $process.WaitForExit(120000)
+              $timer.Stop()
+              $process.Refresh()
+              $exitCode = if ($finished) { $process.ExitCode } else { $null }
+              $passes = @(Select-String -LiteralPath $log -Pattern '^100% tests passed out of 1$').Count
+              $result = if (-not $finished) { 'timeout' } elseif ($exitCode -ne 0) {
+                'failure'
+              } elseif ($passes -ne 8) { 'incomplete' } else { 'pass' }
+              "$attempt,$result,$exitCode,$([int]$timer.Elapsed.TotalSeconds),$passes" |
+                Add-Content $results
+              Copy-Item -LiteralPath msys2-tests/cmake -Destination "$root/cmake-$attempt-tree" -Recurse
+              Get-Content -LiteralPath $log
+              if ($result -ne 'pass') {
+                Get-CimInstance Win32_Process -OperationTimeoutSec 10 |
+                  Select-Object ProcessId,ParentProcessId,Name,ExecutablePath |
+                  Format-List | Out-File "$root/cmake-$attempt-processes.log"
+                throw "CMake attempt ${attempt}: $result (exit=$exitCode, CTest passes=$passes/8); evidence saved."
+              }
+            }
+          } catch {
+            $failures.Add(($_ | Out-String))
+            $_ | Out-String | Tee-Object -FilePath "$root/cmake-step-error.log"
           }
-          Get-Content "$root/watcher-ready.json"
-          $results = Join-Path $root 'cmake-results.csv'
-          'attempt,result,exit_code,seconds,ctest_passes' | Set-Content $results
-          for ($attempt = 1; $attempt -le 20; $attempt++) {
-            $log = Join-Path $root "cmake-$attempt.log"
-            "Starting attempt $attempt at $([DateTime]::UtcNow.ToString('o'))" |
-              Tee-Object -FilePath ci-diagnostics/cmake-attempts.log -Append
-            $arguments = '/d /s /c ""{0}" -c "make -C msys2-tests -j cmake" <NUL >"{1}" 2>&1"' -f $wrapper, $log
-            $timer = [Diagnostics.Stopwatch]::StartNew()
-            $process = Start-Process -FilePath $env:ComSpec -ArgumentList $arguments `
-              -WorkingDirectory $env:GITHUB_WORKSPACE -NoNewWindow -PassThru
-            $finished = $process.WaitForExit(120000)
-            $timer.Stop()
-            $process.Refresh()
-            $exitCode = if ($finished) { $process.ExitCode } else { $null }
-            $passes = @(Select-String -LiteralPath $log -Pattern '^100% tests passed out of 1$').Count
-            $result = if (-not $finished) { 'timeout' } elseif ($exitCode -ne 0) {
-              'failure'
-            } elseif ($passes -ne 8) { 'incomplete' } else { 'pass' }
-            "$attempt,$result,$exitCode,$([int]$timer.Elapsed.TotalSeconds),$passes" |
-              Add-Content $results
-            Copy-Item -LiteralPath msys2-tests/cmake -Destination "$root/cmake-$attempt-tree" -Recurse
-            Get-Content -LiteralPath $log
-            if ($result -ne 'pass') {
-              Get-CimInstance Win32_Process -OperationTimeoutSec 10 |
-                Select-Object ProcessId,ParentProcessId,Name,ExecutablePath |
-                Format-List | Out-File "$root/cmake-$attempt-processes.log"
-              throw "CMake attempt ${attempt}: $result (exit=$exitCode, CTest passes=$passes/8); evidence saved."
+          try {
+            $analysisScript = Join-Path $root 'run-copilot.sh'
+            [IO.File]::WriteAllText($analysisScript, @'
+          if copilot -p "Follow @.github/copilot-prompts/debug-msys-gcc.md exactly." \
+            --model gpt-6.1-sol --effort max --context long_context \
+            --yolo --no-ask-user --secret-env-vars GH_TOKEN \
+            --output-format json </dev/null 2>&1 | tee ci-diagnostics/copilot.log \
+            | node .github/copilot-prompts/filter-ci-events.cjs \
+            | tee ci-diagnostics/copilot-readable.log; then
+            printf '%s\n' 'Copilot exited successfully.' \
+              | tee -a ci-diagnostics/copilot.log ci-diagnostics/copilot-readable.log
+          else
+            status=$?
+            printf 'Copilot exited with status %s; partial findings and log are preserved.\n' "$status" \
+              | tee -a ci-diagnostics/copilot.log ci-diagnostics/copilot-readable.log
+            exit "$status"
+          fi
+          '@, [Text.Encoding]::ASCII)
+            $analysisInfo = [Diagnostics.ProcessStartInfo]::new((Get-Command bash).Source)
+            $analysisInfo.UseShellExecute = $false
+            $analysisInfo.WorkingDirectory = $env:GITHUB_WORKSPACE
+            $analysisInfo.RedirectStandardInput = $true
+            $analysisInfo.Environment['MSYSTEM'] = 'MINGW64'
+            foreach ($argument in @('--noprofile', '--norc', '-e', '-o', 'pipefail', $analysisScript.Replace('\', '/'))) {
+              $analysisInfo.ArgumentList.Add($argument)
             }
+            $analysis = [Diagnostics.Process]::Start($analysisInfo)
+            $analysis.StandardInput.Close()
+            if (-not $analysis.WaitForExit(1500000)) {
+              throw 'Copilot exceeded its native 25-minute deadline; partial output is preserved.'
+            }
+            if ($analysis.ExitCode -ne 0) {
+              throw "Copilot exited $($analysis.ExitCode); partial output is preserved."
+            }
+          } catch {
+            $failures.Add(($_ | Out-String))
+            $_ | Out-String | Tee-Object -FilePath "$root/copilot-step-error.log"
+          } finally {
+            New-Item -ItemType File -Path "$root/watcher-stop" -Force | Out-Null
+            if ($watcher) {
+              if (-not $watcher.WaitForExit(10000)) {
+                $failures.Add('Watcher did not finish within 10 seconds; partial output is preserved without killing it.')
+              } elseif (-not (Test-Path "$root/watcher-finished.json")) {
+                $failures.Add('Watcher exited without a completion record; inspect its saved output.')
+              }
+            }
+            if (Test-Path "$root/watcher-error.log") {
+              $failures.Add((Get-Content "$root/watcher-error.log" -Raw))
+              Get-Content "$root/watcher-error.log"
+            }
+          }
+          if ($failures.Count) {
+            throw ($failures -join "`n")
           }
 
       - name: Record full-target outcome
@@ -289,60 +365,6 @@ jobs:
               Out-File $env:GITHUB_STEP_SUMMARY -Append
           }
           '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append
-
-      - name: Set up Copilot CLI
-        if: ${{ always() && steps.cmake.outcome != 'skipped' }}
-        timeout-minutes: 3
-        shell: bash
-        run: |
-          npm install -g @github/copilot </dev/null 2>&1 | tee ci-diagnostics/copilot-install.log
-
-      - name: Investigate the live CMake stall with Copilot
-        if: ${{ always() && steps.cmake.outcome != 'skipped' }}
-        timeout-minutes: 25
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
-          MSYS2_ARG_CONV_EXCL: '*'
-        run: |
-          if copilot -p "Follow @.github/copilot-prompts/debug-msys-gcc.md exactly." \
-            --model gpt-6.1-sol --effort max --context long_context \
-            --yolo --no-ask-user --secret-env-vars GH_TOKEN \
-            --output-format json </dev/null 2>&1 | tee ci-diagnostics/copilot.log \
-            | node .github/copilot-prompts/filter-ci-events.cjs \
-            | tee ci-diagnostics/copilot-readable.log; then
-            printf '%s\n' 'Copilot exited successfully.' \
-              | tee -a ci-diagnostics/copilot.log ci-diagnostics/copilot-readable.log
-          else
-            status=$?
-            printf 'Copilot exited with status %s; partial findings and log are preserved.\n' "$status" \
-              | tee -a ci-diagnostics/copilot.log ci-diagnostics/copilot-readable.log
-            exit "$status"
-          fi
-
-      - name: Finish the background watcher
-        if: ${{ always() }}
-        timeout-minutes: 1
-        shell: pwsh
-        run: |
-          New-Item -ItemType File -Path ci-diagnostics/watcher-stop -Force | Out-Null
-          if (Test-Path ci-diagnostics/watcher.pid) {
-            $watcherId = [int](Get-Content ci-diagnostics/watcher.pid)
-            $running = Get-CimInstance Win32_Process -Filter "ProcessId = $watcherId" -OperationTimeoutSec 5
-            if ($running) {
-              $watcher = Get-Process -Id $watcherId
-              if (-not $watcher.WaitForExit(10000)) {
-                Write-Warning 'Watcher is still running; preserve its partial output without killing it.'
-              }
-            } else {
-              Write-Output 'Watcher has already exited; inspect its saved status.'
-            }
-          }
-          if (Test-Path ci-diagnostics/watcher-error.log) {
-            Get-Content ci-diagnostics/watcher-error.log
-            throw 'The watcher reported an error; captured evidence remains available.'
-          }
 
       - name: Upload live capture and Copilot evidence
         if: ${{ always() }}
