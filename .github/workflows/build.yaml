@@ -7,6 +7,7 @@ permissions:
 
 jobs:
   build:
+    if: ${{ github.repository != 'dscho/msys2-runtime' || github.ref != 'refs/heads/ci/copilot-msys-gcc-timeout-375-20261003' }}
     runs-on: windows-latest
     timeout-minutes: 20
 
@@ -97,7 +98,6 @@ jobs:
 
   base-address-msys-gcc:
     if: ${{ github.repository == 'dscho/msys2-runtime' && github.ref == 'refs/heads/ci/copilot-msys-gcc-timeout-375-20261003' }}
-    needs: build
     name: MSYS-gcc base-address (${{ matrix.runtime }})
     strategy:
       fail-fast: false
@@ -134,6 +134,8 @@ jobs:
             "workflow_revision=$env:GITHUB_SHA"
             'control_revision=0eed0a44c3b8366ea17b2f0ddca0c2d0eeb429a7'
             'control_artifact=msys2/msys2-runtime/37015007624/install'
+            'candidate_revision=536fe9cdf1a85c725dfe24cde3596bb608d8e9b8'
+            'candidate_artifact=dscho/msys2-runtime/37146578021/install'
             'tests_revision=a5a6995b100ef2b09cd96b4c6262a573840b3af9'
             "runner_image=$env:ImageOS"
             "runner_image_version=$env:ImageVersion"
@@ -164,7 +166,7 @@ jobs:
         with:
           name: install
           repository: ${{ matrix.runtime == 'control' && 'msys2/msys2-runtime' || github.repository }}
-          run-id: ${{ matrix.runtime == 'control' && '37015007624' || github.run_id }}
+          run-id: ${{ matrix.runtime == 'control' && '37015007624' || '37146578021' }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: ${{ steps.msys2.outputs.msys2-location }}
 
