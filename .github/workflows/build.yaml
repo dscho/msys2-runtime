@@ -170,6 +170,16 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: ${{ steps.msys2.outputs.msys2-location }}
 
+      - name: Restore the original CMake version
+        timeout-minutes: 2
+        shell: msys2 {0}
+        run: |
+          set -e -o pipefail
+          pacman --noconfirm -U \
+            https://repo.msys2.org/msys/x86_64/cmake-4.4.3-1-x86_64.pkg.tar.zst \
+            </dev/null 2>&1 | tee ci-diagnostics/cmake-install.log
+          test "$(pacman -Q cmake)" = 'cmake 4.4.3-1'
+
       - name: Verify selected runtime and base address
         timeout-minutes: 2
         shell: msys2 {0}
@@ -177,6 +187,7 @@ jobs:
           set -e -o pipefail
           {
             uname -a
+            cmake --version
             sha256sum /usr/bin/msys-2.0.dll
             pacman -Q
           } </dev/null 2>&1 | tee ci-diagnostics/runtime.log
