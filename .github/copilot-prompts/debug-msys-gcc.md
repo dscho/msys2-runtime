@@ -3,13 +3,17 @@
 ## Context
 
 You are running in the `debug-msys-gcc` job on a GitHub Actions
-`windows-2025` runner. The `Exercise MSYS-gcc CMake test` step runs up to
-six bounded CMake-only attempts after the original action's toolchain, rust,
+`windows-2025` runner. The `Repeat the original MSYS-gcc CMake target` step
+runs up to twenty bounded full CMake targets after the original toolchain, rust,
 and python prerequisites. It may have timed out, failed, or passed every
 attempt. Determine which happened; do not assume a hang was reproduced.
 The workflow installs MSYS2, enables the staging repository, and unpacks
 the `install` artifact from the successful
-msys2/msys2-runtime run 37014998883 (commit c0b496fb63f26893a1d1085ebeecc54c99c9e2d1).
+msys2/msys2-runtime run 37015007624 (runtime 0eed0a44c3b8366ea17b2f0ddca0c2d0eeb429a7).
+The workflow restores the original CMake 4.4.3 package. Verify the executed
+version, loaded DLL, test SHA, and package inventory rather than assuming
+that setup succeeded. The checkout's one-line DLL-base candidate is NOT
+installed: this session investigates the original control artifact.
 The original failing PR run was 37015007624, job 110867718574. Its tests
 stopped printing output at 2026-10-02 13:59:53 UTC on
 `-- Detecting C compiler ABI info` while configuring
@@ -34,33 +38,48 @@ The first fork diagnostic run passed this CMake target in 24 seconds, then
 failed in a different `runtime` symlink test. Do not investigate that
 later failure here.
 
-## Evidence from the previous focused CI session
+## Live capture and previous evidence
 
-Fork run 37121023011 (job 111196992783) installed and loaded the same
-c0b496fb artifact DLL (SHA256
-6FBC247448D6DD2E5E4651F4773090EE32C6941EA46F3C855CEFB1F32E563E89)
-and the pinned tests. Its first CMake attempt stopped at
-`-- Detecting C compiler ABI info` for Ninja/UCRT. The 180-second timeout
-terminated `make`, but the tee pipeline did not return before the outer
-12-minute step deadline. Its Copilot session ran into the job's hard
-deadline before artifact upload; the saved job log contains partial
-checkpoints, not a verified fix.
+The native Node watcher `.github/copilot-prompts/watch-cmake.cjs` is already
+running independently of this Copilot session. It scopes processes to
+`$MSYS2_ROOT/usr/bin/cmake.exe` created after watcher startup. After the same
+process has survived 45 seconds and the full-target logs have made no progress
+for 45 seconds, it saves `hang-PID.json`, the native process inventory, and
+`hang-PID-debugger.log`. CDB, if available at the SDK path, captures modules,
+all thread stacks and memory regions noninvasively, then detaches. Otherwise
+the installed MSYS GDB captures modules, all stacks and loaded sections,
+then detaches. Read `watcher-ready.json` and every capture/exit/error record:
+an exit code alone does not prove valid stacks or symbols were obtained.
+The 120-second native target deadline leaves the stalled process alive.
+Do not kill it, its parent, or any other process.
 
-Those checkpoints establish **14 unchanged full CMake target successes**
-and **36 successful narrowed ABI configures interspersed with two
-90-second waits**. On the first live wait, the process tree had only
-cmd, Bash, and CMake, with NO compiler, linker, or Ninja child.
-GDB found CMake's main thread in libuv `poll -> select_stuff::wait`,
-and an MSYS `pipesel` thread in `PeekNamedPipe` at `select.cc:604`.
-That wait was before the ABI-start message. A second narrowed wait
-reached `try_compile` at `-- Detecting C compiler ABI info` with a
-similarly childless tree; the expanded GDB script aborted internally
-(exit 2816), so the selected fd and pipe-mode fields were NOT obtained.
-The next discriminating experiment is a minimal GDB inspection of that
-fd/handle on a live wait, to determine whether it is subprocess output
-or an internal libuv/signal pipe. Do not patch `PeekNamedPipe` based
-only on this stack, and do not repeat 14 broad passes before testing
-the unresolved question.
+Start with THIS full-target stall and its stack/module evidence. Preserve
+the original raw capture before changing debugger settings or rerunning.
+If the debugger is still running, inspect its preserved output and status
+before attaching another debugger. The watcher does not kill a debugger
+that exceeds its 30-second observation deadline. Never use broad taskkill,
+Stop-Process, pkill, or killall. A missing/failed capture is an infrastructure
+problem to resolve explicitly, not proof that no process or hang exists.
+
+Fork run 37134733906 passed **all six initial full targets**. A later,
+separately labelled narrowed search passed 117 configures and captured
+one natural UCRT/Ninja ABI wait. On that narrowed wait, typed GDB inspection
+identified fd6 as libuv's signal pipe and fd8 as its async-wakeup pipe.
+The main thread was in `poll/select_stuff::wait`; a signal thread was
+sampled through `wait_sig -> process -> setup_handler -> interrupt_now ->
+inside_kernel`. These are clues, NOT established facts about THIS process.
+Its fd0-2/controlling tty were not captured. Do not infer that the selected
+pipe is subprocess output, or that PTY startup never occurred.
+
+Paired run 37183040185 produced 17 complete control passes, then a full-target
+UCRT/Unix Makefiles timeout before the ABI-start message; the higher-base
+candidate passed all 20 targets. Both arms used CMake 4.4.4, not the original
+4.4.3. No stack was captured on that full-target timeout, so neither its
+cause nor the base-address change is verified. Current shared mappings use
+the fixed range in `memory_layout.h:19-21` through `mm/shared.cc:116-180`;
+the old base patch's below-DLL shared-console rationale does not describe
+this allocator. Capture ACTUAL loaded module addresses and shared-region
+addresses; a PE preferred ImageBase is not a loaded address.
 
 A passing Git for Windows run
 (git-for-windows/msys2-runtime run 37015654781, job 110868776450)
@@ -74,6 +93,10 @@ intermittent hang, especially after 14 full passes with c0b496fb.
 Treat that patch-set hypothesis as a candidate to discriminate, not
 an established cause. The upstream console-mode v18 and owner-exit v5
 fixes in msys2/msys2-runtime#368 are already present in both trees.
+If analyzing GfW changes, inspect only the first-parent successors of
+the merging-rebase marker 8029ebf0305e037cde2e474acc49339fcd2c8916 up to
+53a3dd3145547c314b4df6cb0b0a045e27e4b1cf. The first merge imports the common
+MSYS2 base; do not count that imported base as GfW-only patches.
 
 **All files you create for the operator (scripts, logs, diffs, diagnostics)
 MUST go inside `$GITHUB_WORKSPACE/ci-diagnostics/`.** Inspect files under
@@ -154,9 +177,9 @@ clearly instead of claiming a fix.
 
 ### Iterate until proven
 
-Your session budget is approximately 45 minutes. Reserve at least ten
+Your session budget is approximately 23 minutes. Reserve at least five
 minutes for final documentation and copying any patch and logs into
-`ci-diagnostics/`; finish the diagnosis before 40 minutes have elapsed.
+`ci-diagnostics/`; finish the diagnosis before 22 minutes have elapsed.
 A failed end-to-end verification is **information, not defeat**: refine
 the hypothesis, refine the fix, re-apply, re-run. Do not
 spend the whole session waiting on a hung child: give each subprocess a
@@ -184,6 +207,14 @@ Every subprocess you launch from diagnostic helpers MUST:
    headless runner, investigate invisible dialogs and blocked pipes.
    Never kill the runner shell or another unrelated process.
 
+Do not rely on MSYS `timeout` to release a native CMake process or an output
+pipeline; that channel failed in earlier sessions. Use a native PowerShell
+wait, log directly to files, and leave a timed-out target alive for inspection.
+For further full-target attempts use `ci-diagnostics/cmake-N.log` with fresh
+numeric N values so the background watcher can observe forward progress.
+After every complete attempt require exit0 and exactly eight lines matching
+`^100% tests passed out of 1$`. Do not assume the older CTest summary format.
+
 When invoking native Windows programs through MSYS2 or Git Bash, watch for
 argument/path mangling; use the actual `msys2 {0}` shell or its wrapper for
 the reproducer. Use PowerShell for independent Windows process inspection.
@@ -206,8 +237,9 @@ or upload anything besides the configured diagnostic artifact.
 
 1. **Read the CMake attempt logs first.** Use
    `ci-diagnostics/cmake-attempts.log` and `cmake-N.log` to record each
-   attempt's status, the last forward-progress line and time if any hung,
-   and the exact command. If all six attempts passed, label the hang
+   `cmake-results.csv`, attempt statuses, the last forward-progress line if
+   any hung, and the exact command. Read the watcher stack/module records.
+   If all initial attempts passed, label the initial hang
    NOT REPRODUCED in this runner; still investigate the intermittent
    failure using the prior live-wait evidence above. Do not waste the
    session retrying unavailable GitHub CLI authentication or fetching
@@ -224,11 +256,16 @@ or upload anything besides the configured diagnostic artifact.
    starting it.
 3. **Run a bounded reproducer.** In the same `MSYSTEM=MSYS` environment,
    rerun the CMake target or a narrower test of the exact stalled
-   compiler command with a deadline; capture full stdout/stderr and
-   inspect the live process tree while it is stuck. Prioritize inspecting
-   the selected pipe fd/handle with the minimal GDB command that succeeded
-   previously; the extended Python debugger script crashed and is not
-   trustworthy pipe-field evidence. If necessary, compare the original
+   compiler command with a native deadline; capture full stdout/stderr and
+   inspect the live process tree while it is stuck. First inspect the
+   original live full-target PID: all thread stacks, ACTUAL DLL/module and
+   shared mapping addresses, selected fds/pipe roles, fd0-2/ctty, and pending
+   signal state. Use small read-only GDB commands for DWARF types if CDB has
+   only export symbols. Do not execute functions in the inferior. A previous
+   extended debugger script crashed; do not blindly reuse it. Take another
+   bounded stack snapshot to distinguish a persistent wait from sampling.
+   Do not replace a full-target stall with an unlabelled narrowed experiment.
+   If necessary, compare the original
    action directory with the separate pinned checkout
    to test whether path or preceding action steps matter. Write the
    prediction, command, exit code, evidence, and implications immediately.

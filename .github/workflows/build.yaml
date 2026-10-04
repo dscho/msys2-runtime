@@ -96,24 +96,21 @@ jobs:
       - name: Run tests
         uses: msys2/msys2-tests@main
 
-  base-address-msys-gcc:
+  debug-msys-gcc:
     if: ${{ github.repository == 'dscho/msys2-runtime' && github.ref == 'refs/heads/ci/copilot-msys-gcc-timeout-375-20261003' }}
-    name: MSYS-gcc base-address (${{ matrix.runtime }})
-    strategy:
-      fail-fast: false
-      matrix:
-        runtime: [control, base-0x210040000]
+    name: MSYS-gcc live hang capture
     runs-on: windows-2025
-    timeout-minutes: 35
+    timeout-minutes: 65
     permissions:
       contents: read
       actions: read
+      copilot-requests: write
     env:
       CC: gcc
       CXX: g++
       FC: gfortran
-      RUNTIME: ${{ matrix.runtime }}
-      EXPECTED_BASE: ${{ matrix.runtime == 'control' && '0000000180040000' || '0000000210040000' }}
+      RUNTIME: control
+      EXPECTED_BASE: '0000000180040000'
     steps:
       - name: Checkout experiment
         uses: actions/checkout@v7
@@ -125,7 +122,7 @@ jobs:
           ref: a5a6995b100ef2b09cd96b4c6262a573840b3af9
           path: msys2-tests
 
-      - name: Initialize comparison evidence
+      - name: Initialize live capture evidence
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path ci-diagnostics | Out-Null
@@ -134,12 +131,16 @@ jobs:
             "workflow_revision=$env:GITHUB_SHA"
             'control_revision=0eed0a44c3b8366ea17b2f0ddca0c2d0eeb429a7'
             'control_artifact=msys2/msys2-runtime/37015007624/install'
-            'candidate_revision=536fe9cdf1a85c725dfe24cde3596bb608d8e9b8'
-            'candidate_artifact=dscho/msys2-runtime/37146578021/install'
             'tests_revision=a5a6995b100ef2b09cd96b4c6262a573840b3af9'
             "runner_image=$env:ImageOS"
             "runner_image_version=$env:ImageVersion"
           ) | Set-Content ci-diagnostics/provenance.log
+          @(
+            '# MSYS-gcc live hang diagnosis'
+            ''
+            'No test outcome has been established yet.'
+            'The original runtime artifact and CMake 4.4.3 are selected.'
+          ) | Set-Content ci-diagnostics/copilot-diagnosis.md
 
       - id: msys2
         uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e
@@ -161,12 +162,12 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           msys2 -c 'pacman --noconfirm -Suu'
 
-      - name: Install selected runtime artifact
+      - name: Reuse the original failing-run runtime artifact
         uses: actions/download-artifact@v8
         with:
           name: install
-          repository: ${{ matrix.runtime == 'control' && 'msys2/msys2-runtime' || github.repository }}
-          run-id: ${{ matrix.runtime == 'control' && '37015007624' || '37146578021' }}
+          repository: msys2/msys2-runtime
+          run-id: 37015007624
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: ${{ steps.msys2.outputs.msys2-location }}
 
@@ -210,13 +211,32 @@ jobs:
 
       - name: Repeat the original MSYS-gcc CMake target
         id: cmake
-        timeout-minutes: 15
+        timeout-minutes: 12
         shell: pwsh
+        env:
+          MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
         run: |
           $ErrorActionPreference = 'Stop'
           $env:MSYSTEM = 'MSYS'
           $wrapper = (Get-Command msys2).Source
           $root = (Resolve-Path ci-diagnostics).Path
+          $watcherScript = Join-Path $env:GITHUB_WORKSPACE '.github/copilot-prompts/watch-cmake.cjs'
+          $watcher = Start-Process -FilePath (Get-Command node).Source `
+            -ArgumentList "`"$watcherScript`" `"$env:MSYS2_ROOT`" `"$root`"" `
+            -NoNewWindow -PassThru `
+            -RedirectStandardOutput "$root/watcher.stdout.log" `
+            -RedirectStandardError "$root/watcher.stderr.log"
+          $watcher.Id | Set-Content "$root/watcher.pid"
+          $readyDeadline = [DateTime]::UtcNow.AddSeconds(30)
+          while (-not (Test-Path "$root/watcher-ready.json")) {
+            if ($watcher.HasExited -or [DateTime]::UtcNow -ge $readyDeadline) {
+              Get-Content "$root/watcher.stderr.log"
+              throw 'CMake watcher did not become ready; evidence saved.'
+            }
+            Start-Sleep -Seconds 1
+            $watcher.Refresh()
+          }
+          Get-Content "$root/watcher-ready.json"
           $results = Join-Path $root 'cmake-results.csv'
           'attempt,result,exit_code,seconds,ctest_passes' | Set-Content $results
           for ($attempt = 1; $attempt -le 20; $attempt++) {
@@ -247,15 +267,15 @@ jobs:
             }
           }
 
-      - name: Record comparison outcome
+      - name: Record full-target outcome
         if: ${{ always() && steps.cmake.outcome != 'skipped' }}
         shell: pwsh
         run: |
           @(
-            "# MSYS-gcc base-address experiment: $env:RUNTIME"
+            '# MSYS-gcc live hang capture'
             ''
             'An attempt passes only with exit 0 and all eight CTest success lines.'
-            'Candidate passes without a reproduced control hang are inconclusive.'
+            'Passing initial attempts do not reproduce the intermittent hang.'
             ''
             '```csv'
           ) | Out-File $env:GITHUB_STEP_SUMMARY -Append
@@ -270,11 +290,65 @@ jobs:
           }
           '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append
 
-      - name: Upload comparison evidence
+      - name: Set up Copilot CLI
+        if: ${{ always() && steps.cmake.outcome != 'skipped' }}
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          npm install -g @github/copilot </dev/null 2>&1 | tee ci-diagnostics/copilot-install.log
+
+      - name: Investigate the live CMake stall with Copilot
+        if: ${{ always() && steps.cmake.outcome != 'skipped' }}
+        timeout-minutes: 25
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
+          MSYS2_ARG_CONV_EXCL: '*'
+        run: |
+          if copilot -p "Follow @.github/copilot-prompts/debug-msys-gcc.md exactly." \
+            --model gpt-6.1-sol --effort max --context long_context \
+            --yolo --no-ask-user --secret-env-vars GH_TOKEN \
+            --output-format json </dev/null 2>&1 | tee ci-diagnostics/copilot.log \
+            | node .github/copilot-prompts/filter-ci-events.cjs \
+            | tee ci-diagnostics/copilot-readable.log; then
+            printf '%s\n' 'Copilot exited successfully.' \
+              | tee -a ci-diagnostics/copilot.log ci-diagnostics/copilot-readable.log
+          else
+            status=$?
+            printf 'Copilot exited with status %s; partial findings and log are preserved.\n' "$status" \
+              | tee -a ci-diagnostics/copilot.log ci-diagnostics/copilot-readable.log
+            exit "$status"
+          fi
+
+      - name: Finish the background watcher
+        if: ${{ always() }}
+        timeout-minutes: 1
+        shell: pwsh
+        run: |
+          New-Item -ItemType File -Path ci-diagnostics/watcher-stop -Force | Out-Null
+          if (Test-Path ci-diagnostics/watcher.pid) {
+            $watcherId = [int](Get-Content ci-diagnostics/watcher.pid)
+            $running = Get-CimInstance Win32_Process -Filter "ProcessId = $watcherId" -OperationTimeoutSec 5
+            if ($running) {
+              $watcher = Get-Process -Id $watcherId
+              if (-not $watcher.WaitForExit(10000)) {
+                Write-Warning 'Watcher is still running; preserve its partial output without killing it.'
+              }
+            } else {
+              Write-Output 'Watcher has already exited; inspect its saved status.'
+            }
+          }
+          if (Test-Path ci-diagnostics/watcher-error.log) {
+            Get-Content ci-diagnostics/watcher-error.log
+            throw 'The watcher reported an error; captured evidence remains available.'
+          }
+
+      - name: Upload live capture and Copilot evidence
         if: ${{ always() }}
         timeout-minutes: 3
         uses: actions/upload-artifact@v7
         with:
-          name: msys-gcc-base-address-${{ matrix.runtime }}
+          name: msys-gcc-live-hang
           path: ci-diagnostics/
           if-no-files-found: error
