@@ -57,10 +57,16 @@ It scopes processes to
 `$MSYS2_ROOT/usr/bin/cmake.exe` created after watcher startup. After the same
 process has survived 45 seconds and the full-target logs have made no progress
 for 45 seconds, it saves `hang-PID.json`, the native process inventory, and
-`hang-PID-debugger.log`. CDB, if available at the SDK path, captures modules,
-all thread stacks and memory regions noninvasively, then detaches. Otherwise
-the installed MSYS GDB captures modules, all stacks and loaded sections,
-then detaches. Read `watcher-ready.json` and every capture/exit/error record:
+`hang-PID-debugger.log`. CDB, if available at the SDK path, captures modules
+and all thread stacks noninvasively, then explicitly detaches. Run 37275179103
+verified that this SDK rejects `-pd` even with exit 0 and treats bare `no`
+after `-netsyms` as an executable. `-netsyms` is a standalone switch.
+The watcher now requires actual runtime-module and stack output, not just
+exit 0. `!address` failed without ntdll symbols; obtain shared mappings
+through typed runtime state or read-only VirtualQueryEx instead. CDB's
+export-symbol labels are not runtime DWARF frames. If CDB is absent, the
+installed MSYS GDB captures modules, all stacks and loaded sections, then
+detaches. Read `watcher-ready.json` and every capture/exit/error record:
 an exit code alone does not prove valid stacks or symbols were obtained.
 The 120-second native target deadline leaves the stalled process alive.
 Do not kill it, its parent, or any other process.

@@ -80,9 +80,9 @@ async function main() {
         'ConvertTo-Json -Compress');
       write(`${prefix}-processes.json`, all);
       const args = fs.existsSync(cdb) ?
-        ['-pv', '-pd', '-sins', '-netsyms', 'no', '-y', output,
+        ['-pv', '-sins', '-netsyms', '-y', output,
           '-p', String(target.ProcessId), '-c',
-          '.time; lm; ~* kp; !address; .detach; q'] :
+          '.time; lm; lmv m msys*; ~* kp; .detach; q'] :
         ['-nx', '-batch', '-iex', 'set auto-load off',
           '-iex', 'set debuginfod enabled off',
           '-ex', 'set pagination off', '-p', String(target.ProcessId),
@@ -108,15 +108,29 @@ async function main() {
         })
       ]);
       clearTimeout(timer);
-      write(`${prefix}-capture.json`, result);
+      const text = fs.readFileSync(
+        path.join(output, `${prefix}-debugger.log`), 'utf8');
+      const hasModule = fs.existsSync(cdb) ?
+        /^\s*[0-9a-f`]+\s+[0-9a-f`]+\s+msys_2_0\b/im.test(text) :
+        /\bmsys-2\.0\.dll\b/i.test(text);
+      const hasStack = fs.existsSync(cdb) ?
+        /^\s*Child-SP\s+RetAddr\s+Call Site\s*$/m.test(text) &&
+          /^\s*[0-9a-f`]+\s+[0-9a-f`]+\s+\S+!\S+/im.test(text) :
+        /^\s*#0\s/m.test(text);
+      const validEvidence = !result.timedOut && result.code === 0 &&
+        hasModule && hasStack;
+      write(`${prefix}-capture.json`, { ...result, validEvidence });
       console.log(`Captured CMake PID ${target.ProcessId}: ` +
-        JSON.stringify(result));
+        JSON.stringify({ ...result, validEvidence }));
       if (result.timedOut) {
         throw new Error('Debugger exceeded 30 seconds; partial output saved. ' +
           'Debugger and target were not killed; inspect before reattaching.');
       }
       if (result.code !== 0)
         throw new Error(`Debugger exited ${result.code}; inspect saved output`);
+      if (!validEvidence)
+        throw new Error('Debugger exited 0 without runtime module and stack ' +
+          'evidence; inspect saved output');
     }
     await sleep(3000);
   }

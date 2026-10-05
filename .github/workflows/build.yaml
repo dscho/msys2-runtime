@@ -385,6 +385,7 @@ jobs:
               $capture = Get-Content $captureFile -Raw | ConvertFrom-Json
               $debuggerLog = Join-Path $root "hang-$($smoke.Id)-debugger.log"
               if ($capture.timedOut -or $capture.code -ne 0 -or
+                  $capture.validEvidence -ne $true -or
                   -not (Test-Path $debuggerLog) -or (Get-Item $debuggerLog).Length -eq 0) {
                 throw 'Synthetic debugger capture failed; partial evidence is preserved.'
               }
