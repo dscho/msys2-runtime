@@ -149,42 +149,52 @@ Record the old count, signal at RAX+0x1490, registers, raw caller stack and
 modules, clear breakpoints, and explicitly detach. Resolve runtime raw PCs
 with the exact control DLL's DWARF; do not trust nearby export labels.
 
-Run 37328429453 stalled naturally on its FIRST full target: x86_64/Ninja,
-120 seconds, two of eight CTest successes, and main `incyg=0` before GDB.
-Its native filter DID catch the synthetic signal case at incoming count 2;
-the quiet synthetic baseline DID break and explicitly detach on a host
-deadline. CMake tracing nevertheless failed: first on a doubled path
-separator, then on `DebugBreakProcess` error 5. The controller threw BEFORE
-writing its result and flushing/draining output. The second raw CDB log
-ends during module loading. This is missing evidence, not proof of a
-permission problem, a loader hang, or absence of a nested handler.
+Run 37336886615 passed ALL 29 unchanged full targets. Its separately
+labelled DEBUGGER-PERTURBED i686/Unix Makefiles configure DID catch signal
+20 with incoming count 2 at the validated before-clear instruction.
+Exact control DWARF resolved the caller as stabilization -> setjmp ->
+dofork -> __posix_spawn_fork -> posix_spawn; the captured libuv PC was just
+after its actual posix_spawn import call. After explicit CDB detach, that
+same process stalled at CXX ABI detection. A later native read BEFORE GDB
+found `incyg=0`; typed inspection found queued, unblocked SIGCHLD and an
+indefinite poll/select wait. PID 2104 is HISTORICAL, not a current target.
+The intervening counter transitions were NOT recorded. Do not equate this
+perturbed configure with the original unchanged PR failure.
 
-Prioritize repairing that control/evidence gap over repeating established
-pipe-role and source-layout inspections. Save commands, native identities
-and phase records immediately, and save the final result in `finally`,
-including control errors and incomplete output. Give CDB its OWN `-logo`
-file as well as separately captured stdout/stderr, so a controller error
-cannot strand its only buffered trace. Use canonical paths derived from
-`MSYS2_ROOT`, not concatenated cygpath roots with trailing separators.
-Microsoft's CDB command-line documentation specifies `-G` to avoid the
-default final process-termination breakpoint:
-https://learn.microsoft.com/en-us/windows-hardware/drivers/debugger/cdb-command-line-options.
-Validate that flag on this SDK; do NOT infer it explains error 5.
+REUSE the durable v3 controller from that SUCCESSFUL run rather than
+recreating its already-fixed argument, expression and buffering bugs.
+Artifact 11359045945 in dscho/msys2-runtime/run 37336886615 contains
+`trace-controller.ps1`, `native-diagnostics.ps1`, `trace-controls.ps1`,
+`trace-configures.ps1`, wrapper scripts and `once-probe.c`. Download the
+artifact ZIP with the existing authenticated gh, inside ci-diagnostics,
+and extract only those diagnostic sources into a separate prior-control
+directory. Preserve the originals before deriving a new trace. The v3
+controller verified signal/no-signal probes AND normal-exit/quiet CMake
+controls, using `-G`, CDB-owned `-logo`, retained stdin, canonical identities
+and error-safe `finally` records. Briefly revalidate its CMake controls
+against this runner; do not spend the session rebuilding the controller.
 
-BEFORE another configure trace, exercise BOTH a normally exiting CMake
-(`-E capabilities`) and a quiet CMake (`-E sleep 30`) through the SAME
-native controller, environment and launch context intended for tracing.
-Require actual TRACE_SETUP, complete output and debugger exit for the
-former, and a host-deadline stack capture and explicit detach for the
-latter. A once-probe-only control is insufficient. At the deadline queue
-capture/detach commands on retained stdin first: the debugger may already
-be stopped. Request a native break only if still needed and only for
-verified fresh identities. Preserve all errors before returning; never
-let an exception bypass state/log preservation or silently kill a target.
-Do not claim a successful control until its actual markers and state agree.
+The next discriminating experiment is a SHORT, ONE-SHOT lifecycle trace
+after the first nested handler, not another immediate detach or all-write
+watch. Save the selected thread and TLS in DEBUGGER pseudo-registers.
+Validate actual instructions/loaded bytes before using these exact-control
+RVAs: after the constant-1 restore 0x2423c; stabilization's handler return
+0x16fa0b and after its decrement 0x16fa13; SIGBE before its decrement
+0x16f866 and after it 0x16f86d. Restrict subsequent breakpoints to that SAME
+thread/TLS, and stop after one sequence. Record the auxiliary return stack
+and the SIGBE return target, not nearby export names. Buffer samples in
+debugger memory and emit them only when the sequence completes or the
+independent host deadline breaks and detaches. Predict whether CMake
+actually follows 2 -> restored 1 -> stabilization 0 -> SIGBE 0xffffffff
+before its next SIGFE-wrapped wait; record deviations rather than forcing
+that model. Validate the applicable stages on the synthetic nesting probe.
 
-Once CMake controls work, spend the remaining diagnostic budget tracing
-its FIRST nested handler with the validated filter, preserving caller PCs.
+Preserve commands, phase records and errors before returning, including
+incomplete drains from a still-live detached target. Queue capture/detach
+commands before requesting a native break; verify fresh identities and
+never terminate a target. The original natural stalled process, if any,
+must stay untouched. Do not repeat established pipe/layout inspections in
+place of capturing these FIRST causal transitions.
 No per-event file I/O is permitted. Label these runs DEBUGGER-PERTURBED
 and separate them from unchanged full-target results. Do not call inferior
 functions or modify runtime variables, and detach before quitting a live
