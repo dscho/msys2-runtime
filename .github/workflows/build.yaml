@@ -215,7 +215,7 @@ jobs:
           if ($revision -ne 'a5a6995b100ef2b09cd96b4c6262a573840b3af9') {
             throw "Unexpected test revision: $revision"
           }
-          git -C msys2-tests archive --format=tar --output="$root/msys2-tests.tar" $revision
+          git -c core.autocrlf=false -C msys2-tests archive --format=tar --output="$root/msys2-tests.tar" $revision
           New-Item -ItemType Directory -Path $tests -Force | Out-Null
           & "$env:MSYS2_ROOT/usr/bin/bsdtar.exe" -xf "$root/msys2-tests.tar" -C $tests
           "MSYS2_TESTS=$tests" | Out-File $env:GITHUB_ENV -Append -Encoding utf8

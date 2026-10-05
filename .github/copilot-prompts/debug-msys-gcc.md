@@ -30,7 +30,9 @@ Working directory: the checked-out msys2-runtime repository at
 msys2/msys2-tests@a5a6995b100ef2b09cd96b4c6262a573840b3af9.
 Its committed blobs are archived into the original action directory
 `_actions/msys2/msys2-tests/main`, recorded in `MSYS2_TESTS` and
-`provenance.log`. This avoids native Git's CRLF checkout conversion.
+`provenance.log`. The archive explicitly disables native Git's autocrlf
+conversion: run 37275179103 proved that archiving alone still converted
+the payload to CRLF. Verify bytes against committed blobs, not just the SHA.
 The reproducer sources that directory's `group_helper.sh` and invokes
 `make -C "$tests" -j cmake` through the original `msys2 {0}` wrapper with `MSYSTEM=MSYS`,
 `CC=gcc`, `CXX=g++`, and `FC=gfortran`. Its CMake test script loops over
