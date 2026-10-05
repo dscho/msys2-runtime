@@ -179,6 +179,31 @@ controls, using `-G`, CDB-owned `-logo`, retained stdin, canonical identities
 and error-safe `finally` records. Briefly revalidate its CMake controls
 against this runner; do not spend the session rebuilding the controller.
 
+Run 37364304285 naturally stalled its FIRST unchanged full target at
+i686/Ninja C ABI detection (120 seconds, 3/8 CTest summaries). A native
+read BEFORE GDB again found main `incyg=0`; typed inspection found queued,
+unblocked SIGCHLD and an indefinite poll/select. The unchanged v3 controls
+passed, but the derived lifecycle extension NEVER ARMED: its 6101-character
+startup command was truncated to 4095 characters, then CDB reported a
+syntax error. No CMake ran under that extension. Its zero pseudo-registers
+were uninitialized buffers, NOT measured counters.
+
+Avoid that measured input-length failure BEFORE launching a debugger.
+Use CDB's documented `-cf` startup file with separate bounded command
+lines, not one long `-c` string or a script reader that joins its lines:
+https://learn.microsoft.com/en-us/windows-hardware/drivers/debugger/cdb-command-line-options.
+Write the ASCII startup file before tracing. Keep the instruction guard
+on its own line, with an explicit bad-instruction detach/quit branch;
+then initialize buffers, define each breakpoint on a separate line, list
+them, emit TRACE_SETUP and continue. Do not enclose the whole setup in
+one multiline conditional. Measure EVERY actual CDB input line, including
+breakpoint command strings and deadline commands, and refuse to launch if
+any reaches 4095 characters. Preserve the startup file and line lengths.
+Revalidate the signal/no-signal lifecycle pair first: TRACE_SETUP and real
+buffered transitions are required, not debugger exit 0 or all-zero buffers.
+If a control fails, repair that exact failure before CMake; do not repeat
+established provenance/pipe/layout dumps in place of this experiment.
+
 The next discriminating experiment is a SHORT, ONE-SHOT lifecycle trace
 after the first nested handler, not another immediate detach or all-write
 watch. Save the selected thread and TLS in DEBUGGER pseudo-registers.
