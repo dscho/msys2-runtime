@@ -149,10 +149,42 @@ Record the old count, signal at RAX+0x1490, registers, raw caller stack and
 modules, clear breakpoints, and explicitly detach. Resolve runtime raw PCs
 with the exact control DLL's DWARF; do not trust nearby export labels.
 
-Validate an independent host deadline/control channel BEFORE a CMake trace.
-Retain debugger control input; an observation timeout alone is not a stop.
-Use only the fresh diagnostic debugger/inferior's verified PID identities
-to request a debugger break, save state and detach, never terminate them.
+Run 37328429453 stalled naturally on its FIRST full target: x86_64/Ninja,
+120 seconds, two of eight CTest successes, and main `incyg=0` before GDB.
+Its native filter DID catch the synthetic signal case at incoming count 2;
+the quiet synthetic baseline DID break and explicitly detach on a host
+deadline. CMake tracing nevertheless failed: first on a doubled path
+separator, then on `DebugBreakProcess` error 5. The controller threw BEFORE
+writing its result and flushing/draining output. The second raw CDB log
+ends during module loading. This is missing evidence, not proof of a
+permission problem, a loader hang, or absence of a nested handler.
+
+Prioritize repairing that control/evidence gap over repeating established
+pipe-role and source-layout inspections. Save commands, native identities
+and phase records immediately, and save the final result in `finally`,
+including control errors and incomplete output. Give CDB its OWN `-logo`
+file as well as separately captured stdout/stderr, so a controller error
+cannot strand its only buffered trace. Use canonical paths derived from
+`MSYS2_ROOT`, not concatenated cygpath roots with trailing separators.
+Microsoft's CDB command-line documentation specifies `-G` to avoid the
+default final process-termination breakpoint:
+https://learn.microsoft.com/en-us/windows-hardware/drivers/debugger/cdb-command-line-options.
+Validate that flag on this SDK; do NOT infer it explains error 5.
+
+BEFORE another configure trace, exercise BOTH a normally exiting CMake
+(`-E capabilities`) and a quiet CMake (`-E sleep 30`) through the SAME
+native controller, environment and launch context intended for tracing.
+Require actual TRACE_SETUP, complete output and debugger exit for the
+former, and a host-deadline stack capture and explicit detach for the
+latter. A once-probe-only control is insufficient. At the deadline queue
+capture/detach commands on retained stdin first: the debugger may already
+be stopped. Request a native break only if still needed and only for
+verified fresh identities. Preserve all errors before returning; never
+let an exception bypass state/log preservation or silently kill a target.
+Do not claim a successful control until its actual markers and state agree.
+
+Once CMake controls work, spend the remaining diagnostic budget tracing
+its FIRST nested handler with the validated filter, preserving caller PCs.
 No per-event file I/O is permitted. Label these runs DEBUGGER-PERTURBED
 and separate them from unchanged full-target results. Do not call inferior
 functions or modify runtime variables, and detach before quitting a live
