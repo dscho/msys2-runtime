@@ -65,6 +65,17 @@ an exit code alone does not prove valid stacks or symbols were obtained.
 The 120-second native target deadline leaves the stalled process alive.
 Do not kill it, its parent, or any other process.
 
+If all initial targets passed and there was no natural watcher capture,
+the owner then runs `cmake -E sleep 90` solely to exercise the native
+debugger. `watcher-smoke/command.json` identifies this SYNTHETIC PID;
+its result and debugger evidence are saved under `watcher-smoke/`.
+If the smoke check failed, its PID's partial capture may still be in the
+top-level directory. This is NOT a reproduced CMake ABI hang or a runtime
+fix. Briefly inspect its actual stack/module output to establish whether
+the backend works, then prioritize the original full-target search.
+The smoke check occurs after initial targets, so it cannot explain their
+outcomes. Do not stop, restart, or replace the still-live main watcher.
+
 Start with THIS full-target stall and its stack/module evidence. Preserve
 the original raw capture before changing debugger settings or rerunning.
 If the debugger is still running, inspect its preserved output and status
@@ -200,8 +211,12 @@ it is still hung. Preserve the original build/log evidence before any test
 script removes or overwrites its own build directory. If all initial
 attempts pass, focus on reproducing the intermittent CMake hang and
 explaining the environmental differences; do not switch to investigating
-other test targets. Do not otherwise delete build directories, clean-build,
-or install extra tools just to retry.
+other test targets. This original-action-path, native-pipe context is the
+next discriminating experiment after the previous separate-path run passed
+32 full targets. Prefer additional complete targets with the current
+watcher over repeating the earlier narrowed configure search; preserve any
+natural full-target wait for live inspection. Do not otherwise delete build
+directories, clean-build, or install extra tools just to retry.
 
 ### Subprocess hygiene (non-negotiable on CI)
 

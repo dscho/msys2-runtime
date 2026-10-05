@@ -348,6 +348,52 @@ jobs:
                 throw "CMake attempt ${attempt}: $result (exit=$exitCode, CTest passes=$passes/8); evidence saved."
               }
             }
+            if (-not (Get-ChildItem -LiteralPath $root -Filter 'hang-*-capture.json')) {
+              $watcher.Refresh()
+              if ($watcher.HasExited) {
+                throw 'Watcher exited before the synthetic check; inspect its saved output.'
+              }
+              $fixture = Join-Path $root 'watcher-smoke'
+              New-Item -ItemType Directory -Path $fixture | Out-Null
+              $stdin = Join-Path $fixture 'stdin-empty'
+              New-Item -ItemType File -Path $stdin | Out-Null
+              $cmakeExe = Join-Path $env:MSYS2_ROOT 'usr/bin/cmake.exe'
+              $smoke = Start-Process -FilePath $cmakeExe -ArgumentList '-E sleep 90' `
+                -NoNewWindow -PassThru -RedirectStandardInput $stdin `
+                -RedirectStandardOutput "$fixture/cmake.stdout.log" `
+                -RedirectStandardError "$fixture/cmake.stderr.log"
+              @{
+                kind = 'Synthetic debugger smoke check, NOT a reproduced hang'
+                pid = $smoke.Id
+                executable = $cmakeExe
+                arguments = '-E sleep 90'
+                startedUtc = [DateTime]::UtcNow.ToString('o')
+              } | ConvertTo-Json | Set-Content "$fixture/command.json"
+              $smokeFinished = $smoke.WaitForExit(120000)
+              @{
+                finished = $smokeFinished
+                exitCode = if ($smokeFinished) { $smoke.ExitCode } else { $null }
+                observedUtc = [DateTime]::UtcNow.ToString('o')
+              } | ConvertTo-Json | Set-Content "$fixture/result.json"
+              if (-not $smokeFinished -or $smoke.ExitCode -ne 0) {
+                throw 'Synthetic CMake sleep did not finish normally; inspect smoke evidence.'
+              }
+              $captureFile = Join-Path $root "hang-$($smoke.Id)-capture.json"
+              if (-not (Test-Path $captureFile)) {
+                throw 'Watcher did not capture the synthetic CMake sleep; inspect its saved output.'
+              }
+              $capture = Get-Content $captureFile -Raw | ConvertFrom-Json
+              $debuggerLog = Join-Path $root "hang-$($smoke.Id)-debugger.log"
+              if ($capture.timedOut -or $capture.code -ne 0 -or
+                  -not (Test-Path $debuggerLog) -or (Get-Item $debuggerLog).Length -eq 0) {
+                throw 'Synthetic debugger capture failed; partial evidence is preserved.'
+              }
+              Get-ChildItem -LiteralPath $root -File | Where-Object {
+                $_.Name -eq "hang-$($smoke.Id).json" -or
+                $_.Name.StartsWith("hang-$($smoke.Id)-")
+              } | Move-Item -Destination $fixture
+              Write-Output 'Synthetic debugger output saved separately; inspect stacks and modules before judging capture quality.'
+            }
           } catch {
             $failures.Add(($_ | Out-String))
             $_ | Out-String | Tee-Object -FilePath "$root/cmake-step-error.log"
