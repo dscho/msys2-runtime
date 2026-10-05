@@ -92,6 +92,50 @@ that exceeds its 30-second observation deadline. Never use broad taskkill,
 Stop-Process, pkill, or killall. A missing/failed capture is an infrastructure
 problem to resolve explicitly, not proof that no process or hang exists.
 
+Fork run 37275179103 reproduced a NATURAL full-target UCRT/Ninja ABI-start
+stall with the original control DLL and CMake 4.4.3. Attempts 1-16 and 18
+each passed all eight tests; attempt 17 reached one CTest success before
+its native deadline. Its PID 8768 is HISTORICAL: that runner has finished.
+Do not reuse its PID or addresses as live observations. Recovered typed
+snapshots showed main `incyg=0`, `current_sig=0`, an unblocked SIGCHLD
+(20/CLD_EXITED 28) queued, and an indefinite `poll/select` wait. The selected
+fd6/fd8 were measured as libuv's signal/async pipes, not child output.
+The actual SIGFE increment address matched DWARF exactly; a simple TLS
+offset mismatch does not explain that capture. The initiating event is
+STILL UNPROVED, and the original i686/Unix Makefiles failure has not
+specifically been reproduced.
+
+Prioritize the FIRST bad incyg transition over another large configure
+search. Before invasive GDB attachment, take a native noninvasive counter
+snapshot if a current natural stall exists. For the exact control artifact
+0eed0a44 (SHA256 cfc995e7946b292debf42ec2b296ee9f4658289f653f7ceb8d9cae18da6d04ad),
+`incyg` is at main StackBase minus 0x1d6c, independently verified against
+DWARF and actual stub instructions. A CDB read-only probe can select the
+main thread and examine `dd poi(@$teb+0x8)-0x1d6c L2`; verify its actual
+output, thread identity and loaded binary before interpreting the values.
+Do not treat a failed expression or zero debugger exit as a counter value.
+
+Trace nesting through `scripts/gendef`, `exceptions.cc`, `thread.cc`,
+`fork.cc`, `sigproc.cc` and the ACTUAL loaded libuv spawn path.
+SIGFE increments and SIGBE decrements a count, but `call_signal_handler`
+restores the constant 1. A cheap SYNTHETIC probe is a handled
+`raise(SIGUSR1)` inside a `pthread_once` initializer: measure the counter
+before/inside/after it using the validated layout, without a debugger.
+Predict the values first; a nesting defect here is not yet proof of the
+natural CMake initiating event. Record samples in memory with QPC timestamps
+and flush after the probe, never per-event file I/O.
+
+If needed, launch a fresh failing CMake configure under installed GDB and
+watch main incyg from startup. Keep a bounded host-memory/mapped ring of
+counter writes, PCs and thread IDs; dump the first underflow or invalid
+poll entry with its caller stack. Label this DEBUGGER-PERTURBED and separate
+from unchanged full-target results. Do not call inferior functions or
+modify runtime variables, and detach before quitting a live inferior.
+The setjmp decrement was introduced by 41e1013e6846f1774dfec085ff983990f67e6437.
+Do not blame it without tracing guards: fork's __SIGHOLD sig_send already
+calls the handler, and libuv 1.53.0 registers a child-only atfork callback.
+Both original red and GfW green installed libuv 1.53.0-1.
+
 Fork run 37134733906 passed **all six initial full targets**. A later,
 separately labelled narrowed search passed 117 configures and captured
 one natural UCRT/Ninja ABI wait. On that narrowed wait, typed GDB inspection
