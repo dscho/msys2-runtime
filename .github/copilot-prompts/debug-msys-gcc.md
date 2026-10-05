@@ -163,12 +163,17 @@ perturbed configure with the original unchanged PR failure.
 
 REUSE the durable v3 controller from that SUCCESSFUL run rather than
 recreating its already-fixed argument, expression and buffering bugs.
-Artifact 11359045945 in dscho/msys2-runtime/run 37336886615 contains
+The workflow downloads artifact 11359045945 from
+dscho/msys2-runtime/run 37336886615 into `ci-diagnostics/prior-control`
+BEFORE starting this session. Its top-level diagnostic sources include
 `trace-controller.ps1`, `native-diagnostics.ps1`, `trace-controls.ps1`,
-`trace-configures.ps1`, wrapper scripts and `once-probe.c`. Download the
-artifact ZIP with the existing authenticated gh, inside ci-diagnostics,
-and extract only those diagnostic sources into a separate prior-control
-directory. Preserve the originals before deriving a new trace. The v3
+`trace-configures.ps1`, wrapper scripts and `once-probe.c`. Read those
+sources directly; do not recursively inspect its historical build trees
+or download it again. Run 37364304285 lost time because the CLI's tools
+had no GH_TOKEN despite the owning step having it. Do not search checkout
+credentials or session history to retrieve sources already provided here.
+If this download failed, record the missing files and workflow error.
+Preserve the originals before deriving a new trace. The v3
 controller verified signal/no-signal probes AND normal-exit/quiet CMake
 controls, using `-G`, CDB-owned `-logo`, retained stdin, canonical identities
 and error-safe `finally` records. Briefly revalidate its CMake controls

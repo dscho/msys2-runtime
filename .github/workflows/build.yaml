@@ -243,6 +243,17 @@ jobs:
         run: |
           npm install -g @github/copilot </dev/null 2>&1 | tee ci-diagnostics/copilot-install.log
 
+      - name: Reuse the validated native trace controller
+        if: ${{ always() && steps.prerequisites.outcome == 'success' }}
+        timeout-minutes: 3
+        uses: actions/download-artifact@v8
+        with:
+          name: msys-gcc-live-hang
+          repository: dscho/msys2-runtime
+          run-id: 37336886615
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ci-diagnostics/prior-control
+
       - name: Run CMake and investigate with the live watcher
         id: cmake
         if: ${{ always() && steps.prerequisites.outcome == 'success' }}
