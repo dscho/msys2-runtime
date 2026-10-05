@@ -125,12 +125,38 @@ Predict the values first; a nesting defect here is not yet proof of the
 natural CMake initiating event. Record samples in memory with QPC timestamps
 and flush after the probe, never per-event file I/O.
 
-If needed, launch a fresh failing CMake configure under installed GDB and
-watch main incyg from startup. Keep a bounded host-memory/mapped ring of
-counter writes, PCs and thread IDs; dump the first underflow or invalid
-poll entry with its caller stack. Label this DEBUGGER-PERTURBED and separate
-from unchanged full-target results. Do not call inferior functions or
-modify runtime variables, and detach before quitting a live inferior.
+Run 37305836013 reproduced a natural x86_64/Unix Makefiles ABI stall after
+four complete passes. Corrected automatic CDB capture worked, and a separate
+native read established `incyg=0` BEFORE GDB. Nine relevant action files
+matched their committed blobs byte for byte. The debugger-free once probe
+confirmed the predicted 0 -> 1 -> 0 -> 0xffffffff sequence; its no-signal
+baseline ended at 0. These establish a real nesting bug, but not its CMake
+call site.
+
+Do NOT repeat that run's all-write GDB watch: it left an inferior and
+debugger alive without flushing the in-memory ring. A deadline tested only
+on the next watch event cannot expire while the target is quiet. Instead
+prefer one narrowly filtered native CDB breakpoint on the FIRST nested
+handler, validating it on the synthetic signal/no-signal pair before CMake.
+The exact control DLL instruction at RVA 0x24029 (loaded address
+0x180064029) is `movl $0,0x1494(%rax)`; RAX is this thread's TLS and the
+incoming count has not yet been erased. Validate the loaded binary and
+instruction bytes, then use a conditional breakpoint for unsigned count
+greater than 1 but below 0x80000000 at RAX+0x1494. Microsoft documents
+`bp /w` C++-style pointer/register conditions at
+https://learn.microsoft.com/en-us/windows-hardware/drivers/debugger/setting-a-conditional-breakpoint.
+Record the old count, signal at RAX+0x1490, registers, raw caller stack and
+modules, clear breakpoints, and explicitly detach. Resolve runtime raw PCs
+with the exact control DLL's DWARF; do not trust nearby export labels.
+
+Validate an independent host deadline/control channel BEFORE a CMake trace.
+Retain debugger control input; an observation timeout alone is not a stop.
+Use only the fresh diagnostic debugger/inferior's verified PID identities
+to request a debugger break, save state and detach, never terminate them.
+No per-event file I/O is permitted. Label these runs DEBUGGER-PERTURBED
+and separate them from unchanged full-target results. Do not call inferior
+functions or modify runtime variables, and detach before quitting a live
+inferior. A filter that never fires is not evidence that no bug occurred.
 The setjmp decrement was introduced by 41e1013e6846f1774dfec085ff983990f67e6437.
 Do not blame it without tracing guards: fork's __SIGHOLD sig_send already
 calls the handler, and libuv 1.53.0 registers a child-only atfork callback.
