@@ -24,3 +24,6 @@ Fixes:
   Addresses: https://cygwin.com/pipermail/cygwin/2026-September/260037.html
 
 - Fix a few more historical console bugs.
+
+- Preserve runtime nesting across signal handlers, fixing potential hangs
+  in posix_spawn callers such as CMake.
