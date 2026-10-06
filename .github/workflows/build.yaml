@@ -7,7 +7,6 @@ permissions:
 
 jobs:
   build:
-    if: ${{ github.repository != 'dscho/msys2-runtime' || github.ref != 'refs/heads/ci/copilot-msys-gcc-timeout-375-20261003' }}
     runs-on: windows-latest
     timeout-minutes: 20
 
@@ -25,9 +24,15 @@ jobs:
       - name: Build
         shell: msys2 {0}
         run: |
-          (cd winsup && ./autogen.sh)
-          ./configure --disable-dependency-tracking --with-msys2-runtime-commit="$GITHUB_SHA"
-          make -j8
+          set -e -o pipefail
+          mkdir -p ci-diagnostics
+          {
+            gcc --version
+            pacman -Q
+            (cd winsup && ./autogen.sh)
+            ./configure --disable-dependency-tracking --with-msys2-runtime-commit="$GITHUB_SHA"
+            make -j8
+          } </dev/null 2>&1 | tee ci-diagnostics/build.log
 
       - name: Install
         shell: msys2 {0}
@@ -39,6 +44,14 @@ jobs:
         with:
           name: install
           path: _dest/
+
+      - name: Preserve runtime build evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: runtime-build-evidence
+          path: ci-diagnostics/
+          if-no-files-found: error
 
   generate-msys2-tests-matrix:
     if: ${{ github.repository != 'dscho/msys2-runtime' || github.ref != 'refs/heads/ci/copilot-msys-gcc-timeout-375-20261003' }}
@@ -97,8 +110,9 @@ jobs:
         uses: msys2/msys2-tests@main
 
   debug-msys-gcc:
+    needs: build
     if: ${{ github.repository == 'dscho/msys2-runtime' && github.ref == 'refs/heads/ci/copilot-msys-gcc-timeout-375-20261003' }}
-    name: MSYS-gcc live hang capture
+    name: MSYS-gcc signal-counter verification
     runs-on: windows-2025
     timeout-minutes: 65
     permissions:
@@ -109,7 +123,7 @@ jobs:
       CC: gcc
       CXX: g++
       FC: gfortran
-      RUNTIME: control
+      RUNTIME: counter-preservation
       EXPECTED_BASE: '0000000180040000'
     steps:
       - name: Checkout experiment
@@ -129,6 +143,7 @@ jobs:
           @(
             "runtime=$env:RUNTIME"
             "workflow_revision=$env:GITHUB_SHA"
+            "candidate_revision=$env:GITHUB_SHA"
             'control_revision=0eed0a44c3b8366ea17b2f0ddca0c2d0eeb429a7'
             'control_artifact=msys2/msys2-runtime/37015007624/install'
             'tests_revision=a5a6995b100ef2b09cd96b4c6262a573840b3af9'
@@ -136,10 +151,11 @@ jobs:
             "runner_image_version=$env:ImageVersion"
           ) | Set-Content ci-diagnostics/provenance.log
           @(
-            '# MSYS-gcc live hang diagnosis'
+            '# MSYS-gcc signal-counter verification'
             ''
             'No test outcome has been established yet.'
-            'The original runtime artifact and CMake 4.4.3 are selected.'
+            'The rebuilt counter correction and original CMake 4.4.3 are selected.'
+            'The original runtime artifact is retained for isolated control probes.'
           ) | Set-Content ci-diagnostics/copilot-diagnosis.md
 
       - id: msys2
@@ -169,6 +185,12 @@ jobs:
           repository: msys2/msys2-runtime
           run-id: 37015007624
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ci-diagnostics/control-runtime
+
+      - name: Install the rebuilt counter correction
+        uses: actions/download-artifact@v8
+        with:
+          name: install
           path: ${{ steps.msys2.outputs.msys2-location }}
 
       - name: Restore the original CMake version
@@ -254,6 +276,144 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: ci-diagnostics/prior-control
 
+      - name: Compile the signal-counter regressions
+        id: compile-counter
+        if: ${{ always() && steps.prerequisites.outcome == 'success' }}
+        timeout-minutes: 2
+        shell: msys2 {0}
+        run: |
+          set -e -o pipefail
+          mkdir -p ci-diagnostics/counter-probes/fixed
+          {
+            gcc -g -O0 -Wall -Wextra ci-diagnostics/prior-control/once-probe.c \
+              -o ci-diagnostics/counter-probes/fixed/once-probe.exe
+            for test in once1 once2; do
+              gcc -g -O0 "winsup/testsuite/winsup.api/pthread/$test.c" \
+                -o "ci-diagnostics/counter-probes/fixed/$test.exe"
+            done
+            sha256sum ci-diagnostics/prior-control/once-probe.c \
+              winsup/testsuite/winsup.api/pthread/once{1,2}.c \
+              ci-diagnostics/counter-probes/fixed/*.exe
+          } </dev/null 2>&1 | tee ci-diagnostics/counter-compile.log
+
+      - name: Compare original and corrected signal nesting
+        id: counter
+        if: ${{ always() && steps.compile-counter.outcome == 'success' }}
+        timeout-minutes: 4
+        shell: pwsh
+        env:
+          MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:MSYSTEM = 'MSYS'
+          $root = (Resolve-Path ci-diagnostics).Path
+          $fixed = Join-Path $root 'counter-probes/fixed'
+          $control = Join-Path $root 'counter-probes/control'
+          New-Item -ItemType Directory -Path $control | Out-Null
+          Copy-Item "$fixed/*.exe" -Destination $control
+          Copy-Item "$env:MSYS2_ROOT/usr/bin/msys-2.0.dll" -Destination $fixed
+          Copy-Item "$root/control-runtime/usr/bin/msys-2.0.dll" -Destination $control
+          $controlHash = (Get-FileHash "$control/msys-2.0.dll").Hash
+          if ($controlHash -ne 'cfc995e7946b292debf42ec2b296ee9f4658289f653f7ceb8d9cae18da6d04ad') {
+            throw "Unexpected original control DLL: $controlHash"
+          }
+          $quiet = 'before-once=00000000,init-entry=00000001,init-after=00000001,after-once=00000000'
+          $broken = 'before-once=00000000,init-entry=00000001,handler=00000000,init-after=00000000,after-once=ffffffff'
+          $balanced = 'before-once=00000000,init-entry=00000001,handler=00000000,init-after=00000001,after-once=00000000'
+          $cases = @(
+            @{ runtime = 'control'; program = 'once-probe'; arguments = @(); counts = $quiet; modules = $true }
+            @{ runtime = 'control'; program = 'once-probe'; arguments = @('signal'); counts = $broken }
+            @{ runtime = 'control'; program = 'once1'; arguments = @() }
+            @{ runtime = 'control'; program = 'once2'; arguments = @(); regression = $true }
+            @{ runtime = 'fixed'; program = 'once-probe'; arguments = @(); counts = $quiet; modules = $true }
+            @{ runtime = 'fixed'; program = 'once-probe'; arguments = @('signal'); counts = $balanced }
+            @{ runtime = 'fixed'; program = 'once1'; arguments = @() }
+            @{ runtime = 'fixed'; program = 'once2'; arguments = @() }
+          )
+          $records = [Collections.Generic.List[object]]::new()
+          try {
+            foreach ($case in $cases) {
+              $mode = if ($case.program -ne 'once-probe') { 'default' } elseif ($case.arguments.Count) {
+                'signal'
+              } else { 'quiet' }
+              $name = "$($case.runtime)-$($case.program)-$mode"
+              $directory = (Resolve-Path (Join-Path $root "counter-probes/$($case.runtime)")).Path
+              $stdout = Join-Path $root "counter-probes/$name.stdout.log"
+              $stderr = Join-Path $root "counter-probes/$name.stderr.log"
+              $info = [Diagnostics.ProcessStartInfo]::new("$directory/$($case.program).exe")
+              $info.UseShellExecute = $false
+              $info.WorkingDirectory = $directory
+              $info.RedirectStandardInput = $true
+              $info.RedirectStandardOutput = $true
+              $info.RedirectStandardError = $true
+              foreach ($argument in $case.arguments) { $info.ArgumentList.Add($argument) }
+              $record = [ordered]@{
+                name = $name; executable = $info.FileName; arguments = $case.arguments
+                startedUtc = [DateTime]::UtcNow.ToString('o'); expectedCounts = $case.counts
+                expectedRegressionFailure = [bool]$case.regression; result = 'incomplete'
+              }
+              $records.Add($record)
+              $outFile = [IO.FileStream]::new($stdout, [IO.FileMode]::Create,
+                [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite, 1, [IO.FileOptions]::Asynchronous)
+              $errFile = [IO.FileStream]::new($stderr, [IO.FileMode]::Create,
+                [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite, 1, [IO.FileOptions]::Asynchronous)
+              $process = [Diagnostics.Process]::Start($info)
+              $record.pid = $process.Id
+              $process.StandardInput.Close()
+              $outCopy = $process.StandardOutput.BaseStream.CopyToAsync($outFile)
+              $errCopy = $process.StandardError.BaseStream.CopyToAsync($errFile)
+              try {
+                if ($case.modules) {
+                  Start-Sleep -Seconds 1
+                  $module = @($process.Modules | Where-Object ModuleName -EQ 'msys-2.0.dll')
+                  if ($module.Count -ne 1) { throw "No unique loaded runtime for $name" }
+                  $record.module = @{
+                    path = $module[0].FileName
+                    base = '{0:x16}' -f $module[0].BaseAddress.ToInt64()
+                    sha256 = (Get-FileHash $module[0].FileName).Hash
+                    version = $module[0].FileVersionInfo.FileVersion
+                  }
+                  if ($record.module.path -ne "$directory\msys-2.0.dll" -or
+                      $record.module.base -ne $env:EXPECTED_BASE -or
+                      $record.module.sha256 -ne (Get-FileHash "$directory/msys-2.0.dll").Hash) {
+                    throw "Unexpected loaded runtime for ${name}: $($record.module | ConvertTo-Json -Compress)"
+                  }
+                }
+              } finally {
+                $record.finished = $process.WaitForExit(45000)
+                $record.exitCode = if ($record.finished) { $process.ExitCode } else { $null }
+                $record.outputComplete = $record.finished -and [Threading.Tasks.Task]::WaitAll(
+                  [Threading.Tasks.Task[]]@($outCopy, $errCopy), 5000)
+                if ($record.outputComplete) { $outFile.Dispose(); $errFile.Dispose() }
+                else { $outFile.Flush(); $errFile.Flush() }
+              }
+              Get-Content -LiteralPath $stdout
+              Get-Content -LiteralPath $stderr
+              if (-not $record.finished -or -not $record.outputComplete) {
+                throw "Incomplete probe $name; the process and partial output are preserved."
+              }
+              if ($case.regression) {
+                if ($record.exitCode -ne 1 -or -not (Select-String -LiteralPath $stderr -Pattern 'poll after pthread_once.*expected -1/EINTR')) {
+                  throw "Original runtime did not fail the expected poll check in $name"
+                }
+              } elseif ($record.exitCode -ne 0) {
+                throw "Probe $name exited $($record.exitCode)"
+              }
+              if ($case.counts) {
+                $samples = @(Select-String -LiteralPath $stdout -Pattern '^(\S+) count=0x([0-9a-f]{8}) qpc=-?[0-9]+$')
+                $record.counts = ($samples | ForEach-Object {
+                  "$($_.Matches[0].Groups[1].Value)=$($_.Matches[0].Groups[2].Value)"
+                }) -join ','
+                if ($record.counts -cne $case.counts) {
+                  throw "Unexpected nesting in ${name}: $($record.counts)"
+                }
+              }
+              $record.result = 'pass'
+            }
+          } finally {
+            $records | ConvertTo-Json -Depth 8 | Set-Content "$root/counter-probes/results.json"
+          }
+
       - name: Run CMake and investigate with the live watcher
         id: cmake
         if: ${{ always() && steps.prerequisites.outcome == 'success' }}
@@ -271,6 +431,9 @@ jobs:
           $watcherScript = Join-Path $env:GITHUB_WORKSPACE '.github/copilot-prompts/watch-cmake.cjs'
           $watcher = $null
           $failures = [Collections.Generic.List[string]]::new()
+          if ('${{ steps.counter.outcome }}' -ne 'success') {
+            $failures.Add('Signal-counter verification failed or was skipped; inspect its preserved results.')
+          }
           try {
             $targetScript = Join-Path $root 'cmake-target.sh'
             [IO.File]::WriteAllText($targetScript, @'
@@ -411,6 +574,7 @@ jobs:
             $_ | Out-String | Tee-Object -FilePath "$root/cmake-step-error.log"
           }
           try {
+            if ($failures.Count) {
             $analysisScript = Join-Path $root 'run-copilot.sh'
             [IO.File]::WriteAllText($analysisScript, @'
           if copilot -p "Follow @.github/copilot-prompts/debug-msys-gcc.md exactly." \
@@ -443,6 +607,18 @@ jobs:
             }
             if ($analysis.ExitCode -ne 0) {
               throw "Copilot exited $($analysis.ExitCode); partial output is preserved."
+            }
+            } else {
+              @(
+                '# MSYS-gcc signal-counter verification'
+                ''
+                'The original control underflowed; the corrected probe preserved nesting.'
+                'The public poll regression failed on the original DLL and passed on the corrected DLL.'
+                'All 20 unchanged full CMake targets passed: exit 0, complete drains, eight CTest summaries each.'
+                'Copilot was not run because verification succeeded.'
+                ''
+                'See counter-probes/results.json and cmake-results.csv for the measured results.'
+              ) | Set-Content "$root/copilot-diagnosis.md"
             }
           } catch {
             $failures.Add(($_ | Out-String))
