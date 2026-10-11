@@ -1,0 +1,41 @@
+name: Nano Server pacman
+
+on: [push, pull_request, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  pacman:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    env:
+      IMAGE: mcr.microsoft.com/powershell:nanoserver-ltsc2022
+
+    steps:
+      - name: Set up the current MSYS2 runtime
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          update: true
+
+      - name: Pull Nano Server
+        shell: pwsh
+        run: |
+          docker pull $env:IMAGE
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          docker image inspect $env:IMAGE --format '{{json .RepoDigests}}'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Update MSYS2 in Nano Server
+        shell: pwsh
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          docker run --rm --user ContainerAdministrator `
+            -v "${env:MSYS2_LOCATION}:C:\msys64" `
+            -e MSYSTEM=MSYS -e CHERE_INVOKING=1 `
+            $env:IMAGE C:\msys64\usr\bin\bash.exe --login -c `
+            'uname -a && pacman -Q msys2-runtime pacman && pacman -Syu --noconfirm'
+          exit $LASTEXITCODE
