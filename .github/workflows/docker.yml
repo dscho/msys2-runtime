@@ -67,7 +67,7 @@ jobs:
             flags='-g -O2 -Wl,--dynamicbase'
           fi
           make -C x86_64-pc-cygwin/winsup/cygwin -j8 \
-            CXXFLAGS="$flags" new-msys-2.0.dll
+            CXXFLAGS="$flags" all
           dll=x86_64-pc-cygwin/winsup/cygwin/new-msys-2.0.dll
           objdump -p "$dll" > dll-headers.txt
           cat dll-headers.txt
