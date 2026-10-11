@@ -38,7 +38,7 @@ jobs:
           update: true
           install: >-
             ${{ inputs.runtime-ref != '' &&
-                'autotools cocom diffutils gcc gettext-devel git libiconv-devel make perl zlib-devel libzstd-devel'
+                'base-devel autotools cocom gcc gettext-devel git libiconv-devel perl zlib-devel libzstd-devel'
                 || '' }}
 
       - name: Pull Server Core
