@@ -39,8 +39,16 @@ jobs:
           update: true
           install: >-
             ${{ inputs.runtime-ref != '' &&
-                'autotools cocom diffutils gcc gettext-devel libiconv-devel make perl zlib-devel libzstd-devel'
+                'autotools cocom diffutils gcc gettext-devel git libiconv-devel make perl zlib-devel libzstd-devel'
                 || '' }}
+
+      - name: Pull Server Core
+        shell: pwsh
+        run: |
+          docker pull $env:IMAGE
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          docker image inspect $env:IMAGE --format '{{json .RepoDigests}}'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build the runtime DLL
         if: inputs.runtime-ref != ''
@@ -91,14 +99,6 @@ jobs:
           Copy-Item x86_64-pc-cygwin\winsup\cygwin\new-msys-2.0.dll `
             "${env:MSYS2_LOCATION}\usr\bin\msys-2.0.dll"
           Get-FileHash "${env:MSYS2_LOCATION}\usr\bin\msys-2.0.dll"
-
-      - name: Pull Server Core
-        shell: pwsh
-        run: |
-          docker pull $env:IMAGE
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          docker image inspect $env:IMAGE --format '{{json .RepoDigests}}'
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Update MSYS2 in Docker
         shell: pwsh
