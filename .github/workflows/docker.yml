@@ -59,7 +59,25 @@ jobs:
         shell: pwsh
         run: |
           docker pull $env:IMAGE
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $pullExitCode = $LASTEXITCODE
+          if ($pullExitCode -ne 0) {
+            $service = Get-Service -Name docker -ErrorAction Stop
+            if ($service.Status -ne 'Stopped') { exit $pullExitCode }
+            Write-Host 'Docker is stopped; starting it before retrying the image pull.'
+            Start-Service -Name docker -ErrorAction Stop
+            $deadline = (Get-Date).AddSeconds(60)
+            do {
+              $info = docker info 2>&1
+              if ($LASTEXITCODE -eq 0) { break }
+              if ((Get-Date) -ge $deadline) {
+                throw "Docker was not ready within 60 seconds: $($info -join [Environment]::NewLine)"
+              }
+              Start-Sleep -Seconds 2
+            } while ($true)
+            docker pull $env:IMAGE
+            $pullExitCode = $LASTEXITCODE
+          }
+          if ($pullExitCode -ne 0) { exit $pullExitCode }
           docker image inspect $env:IMAGE --format '{{json .RepoDigests}}'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
