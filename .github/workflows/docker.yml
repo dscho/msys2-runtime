@@ -4,6 +4,10 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      sdk-ref:
+        description: Git SDK commit whose runtime DLL to test with dynamicbase off and on
+        type: string
+        default: ''
       runtime-repository:
         description: Runtime source repository (empty uses this repository)
         type: string
@@ -28,6 +32,11 @@ jobs:
       IMAGE: mcr.microsoft.com/windows/servercore:ltsc2022
 
     steps:
+      - name: Validate runtime selection
+        if: inputs.sdk-ref != '' && inputs.runtime-ref != ''
+        shell: pwsh
+        run: throw 'Select either an SDK DLL or a source build, not both'
+
       - name: Checkout runtime sources
         if: inputs.runtime-ref != ''
         uses: actions/checkout@v7
@@ -44,7 +53,7 @@ jobs:
           install: >-
             ${{ inputs.runtime-ref != '' &&
                 'base-devel autotools cocom gcc gettext-devel git libiconv-devel perl zlib-devel libzstd-devel'
-                || '' }}
+                || (inputs.sdk-ref != '' && 'binutils rebase' || '') }}
 
       - name: Pull Server Core
         shell: pwsh
@@ -53,6 +62,44 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           docker image inspect $env:IMAGE --format '{{json .RepoDigests}}'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Prepare historical SDK runtime DLLs
+        if: inputs.sdk-ref != ''
+        shell: msys2 {0}
+        env:
+          SDK_REF: ${{ inputs.sdk-ref }}
+        run: |
+          echo "Git SDK source: $SDK_REF"
+          curl --fail --location \
+            "https://raw.githubusercontent.com/git-for-windows/git-sdk-64/$SDK_REF/usr/bin/msys-2.0.dll" \
+            -o sdk-runtime-original.dll
+          peflags -d sdk-runtime-original.dll
+          for flag in 0 1
+          do
+            dll="sdk-runtime-$flag.dll"
+            cp sdk-runtime-original.dll "$dll"
+            peflags -d"$flag" -d "$dll"
+            objdump -p "$dll" > "sdk-runtime-$flag-headers.txt"
+            if test "$flag" = 1
+            then
+              grep -q DYNAMIC_BASE "sdk-runtime-$flag-headers.txt"
+            elif grep -q DYNAMIC_BASE "sdk-runtime-$flag-headers.txt"
+            then
+              echo 'The control DLL unexpectedly enables dynamicbase' >&2
+              exit 1
+            fi
+          done
+          sha256sum sdk-runtime-original.dll sdk-runtime-0.dll sdk-runtime-1.dll
+
+      - name: Upload historical SDK runtime DLLs
+        if: inputs.sdk-ref != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: docker-sdk-runtime
+          path: |
+            sdk-runtime-*.dll
+            sdk-runtime-*-headers.txt
+          if-no-files-found: error
 
       - name: Build the runtime DLL
         if: inputs.runtime-ref != ''
@@ -108,10 +155,29 @@ jobs:
         shell: pwsh
         env:
           MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+          SDK_REF: ${{ inputs.sdk-ref }}
         run: |
-          docker run --rm --user ContainerAdministrator `
-            -v "${env:MSYS2_LOCATION}:C:\msys64" `
-            -e MSYSTEM=MSYS -e CHERE_INVOKING=1 `
-            $env:IMAGE C:\msys64\usr\bin\bash.exe --login -c `
-            'uname -a && pacman -Q msys2-runtime pacman && pacman -Syu --noconfirm'
-          exit $LASTEXITCODE
+          $variants = @('installed')
+          if ($env:SDK_REF) { $variants = @('0', '1') }
+          $failed = $false
+          foreach ($variant in $variants) {
+            Write-Host "Testing runtime variant: $variant"
+            $location = $env:MSYS2_LOCATION
+            if ($env:SDK_REF) {
+              $location = Join-Path $env:RUNNER_TEMP "sdk-msys64-$variant"
+              Copy-Item -LiteralPath $env:MSYS2_LOCATION -Destination $location -Recurse
+              Copy-Item "sdk-runtime-$variant.dll" `
+                "$location\usr\bin\msys-2.0.dll"
+              Get-FileHash "$location\usr\bin\msys-2.0.dll"
+            }
+            docker run --rm --user ContainerAdministrator `
+              -v "${location}:C:\msys64" `
+              -e MSYSTEM=MSYS -e CHERE_INVOKING=1 `
+              $env:IMAGE C:\msys64\usr\bin\bash.exe --login -c `
+              'uname -a && pacman -Q msys2-runtime pacman && pacman -Syu --noconfirm'
+            if ($LASTEXITCODE -ne 0) {
+              Write-Output "::error::Runtime variant $variant exited with code $LASTEXITCODE"
+              $failed = $true
+            }
+          }
+          if ($failed) { exit 1 }
