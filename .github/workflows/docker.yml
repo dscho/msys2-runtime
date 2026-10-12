@@ -4,6 +4,10 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      runtime-repository:
+        description: Runtime source repository (empty uses this repository)
+        type: string
+        default: ''
       runtime-ref:
         description: Runtime source ref to build (empty uses the released runtime)
         type: string
@@ -28,6 +32,7 @@ jobs:
         if: inputs.runtime-ref != ''
         uses: actions/checkout@v7
         with:
+          repository: ${{ inputs.runtime-repository || github.repository }}
           ref: ${{ inputs.runtime-ref }}
 
       - name: Set up the current MSYS2 runtime
