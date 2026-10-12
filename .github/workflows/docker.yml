@@ -73,6 +73,12 @@ jobs:
           curl --fail --location \
             "https://raw.githubusercontent.com/git-for-windows/git-sdk-64/$SDK_REF/usr/bin/msys-2.0.dll" \
             -o sdk-runtime-original.dll
+          for exe in bash.exe sh.exe pacman.exe uname.exe
+          do
+            curl --fail --location \
+              "https://raw.githubusercontent.com/git-for-windows/git-sdk-64/$SDK_REF/usr/bin/$exe" \
+              -o "sdk-$exe"
+          done
           peflags -d sdk-runtime-original.dll
           for flag in 0 1
           do
@@ -89,7 +95,7 @@ jobs:
               exit 1
             fi
           done
-          sha256sum sdk-runtime-original.dll sdk-runtime-0.dll sdk-runtime-1.dll
+          sha256sum sdk-runtime-original.dll sdk-runtime-0.dll sdk-runtime-1.dll sdk-*.exe
 
       - name: Upload historical SDK runtime DLLs
         if: inputs.sdk-ref != ''
@@ -99,6 +105,7 @@ jobs:
           path: |
             sdk-runtime-*.dll
             sdk-runtime-*-headers.txt
+            sdk-*.exe
           if-no-files-found: error
 
       - name: Build the runtime DLL
@@ -163,9 +170,14 @@ jobs:
           foreach ($variant in $variants) {
             Write-Host "Testing runtime variant: $variant"
             $location = $env:MSYS2_LOCATION
+            $shellOptions = @('--login')
             if ($env:SDK_REF) {
+              $shellOptions = @('--noprofile', '--norc')
               $location = Join-Path $env:RUNNER_TEMP "sdk-msys64-$variant"
               Copy-Item -LiteralPath $env:MSYS2_LOCATION -Destination $location -Recurse
+              foreach ($exe in @('bash.exe', 'sh.exe', 'pacman.exe', 'uname.exe')) {
+                Copy-Item "sdk-$exe" "$location\usr\bin\$exe"
+              }
               Copy-Item "sdk-runtime-$variant.dll" `
                 "$location\usr\bin\msys-2.0.dll"
               Get-FileHash "$location\usr\bin\msys-2.0.dll"
@@ -173,8 +185,8 @@ jobs:
             docker run --rm --user ContainerAdministrator `
               -v "${location}:C:\msys64" `
               -e MSYSTEM=MSYS -e CHERE_INVOKING=1 `
-              $env:IMAGE C:\msys64\usr\bin\bash.exe --login -c `
-              'uname -a && pacman -Q msys2-runtime pacman && pacman -Syu --noconfirm'
+              $env:IMAGE C:\msys64\usr\bin\bash.exe @shellOptions -c `
+              'export PATH=/usr/bin:$PATH; uname -a && pacman --version && pacman -Q msys2-runtime pacman && pacman -Syu --noconfirm'
             if ($LASTEXITCODE -ne 0) {
               Write-Output "::error::Runtime variant $variant exited with code $LASTEXITCODE"
               $failed = $true
