@@ -262,3 +262,41 @@ jobs:
             -e 'PATH=C:\msys64\usr\bin;C:\Windows\System32;C:\Windows' `
             $env:IMAGE @command
           exit $LASTEXITCODE
+
+      - name: Exercise historical pacman scriptlets
+        if: inputs.sdk-ref != ''
+        timeout-minutes: 2
+        shell: pwsh
+        env:
+          MSYS2_LOCATION: ${{ steps.runtime.outputs.location }}
+        run: |
+          $dll = "${env:MSYS2_LOCATION}\usr\bin\msys-2.0.dll"
+          $before = (Get-FileHash $dll).Hash
+          docker run --rm --user ContainerAdministrator `
+            -v "${env:MSYS2_LOCATION}:C:\msys64" `
+            -e MSYSTEM=MSYS `
+            -e 'PATH=C:\msys64\usr\bin;C:\Windows\System32;C:\Windows' `
+            $env:IMAGE C:\msys64\usr\bin\pacman.exe `
+            --config /etc/pacman-ci.conf --debug -S --noconfirm msys2-keyring `
+            2>&1 | Tee-Object -FilePath sdk-fork-transaction.log
+          $code = $LASTEXITCODE
+          if ((Get-FileHash $dll).Hash -ne $before) {
+            throw 'The transaction replaced the runtime DLL under test'
+          }
+          if (Select-String -Path sdk-fork-transaction.log `
+              -Pattern 'child_copy:|dofork:|child_info_fork::abort|fork: retry') {
+            throw 'The historical runtime reported a fork failure'
+          }
+          if ($code -ne 0) { exit $code }
+          if (-not (Select-String -Path sdk-fork-transaction.log `
+              -Pattern 'debug: executing.*(sh|bash)')) {
+            throw 'The transaction did not reach the shell scriptlet fork path'
+          }
+
+      - name: Upload historical fork transaction log
+        if: always() && inputs.sdk-ref != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: docker-fork-log-${{ matrix.variant }}
+          path: sdk-fork-transaction.log
+          if-no-files-found: warn
