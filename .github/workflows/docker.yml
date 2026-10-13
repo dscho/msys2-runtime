@@ -27,7 +27,11 @@ permissions:
 jobs:
   pacman:
     runs-on: windows-2022
-    timeout-minutes: 45
+    timeout-minutes: ${{ inputs.sdk-ref != '' && 8 || 45 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: ${{ fromJSON(inputs.sdk-ref != '' && '["0", "1"]' || '["installed"]') }}
     env:
       IMAGE: mcr.microsoft.com/windows/servercore:ltsc2022
 
@@ -91,7 +95,7 @@ jobs:
           curl --fail --location \
             "https://raw.githubusercontent.com/git-for-windows/git-sdk-64/$SDK_REF/usr/bin/msys-2.0.dll" \
             -o sdk-runtime-original.dll
-          for exe in bash.exe sh.exe pacman.exe uname.exe
+          for exe in bash.exe sh.exe pacman.exe
           do
             curl --fail --location \
               "https://raw.githubusercontent.com/git-for-windows/git-sdk-64/$SDK_REF/usr/bin/$exe" \
@@ -116,7 +120,7 @@ jobs:
           sha256sum sdk-runtime-original.dll sdk-runtime-0.dll sdk-runtime-1.dll sdk-*.exe
 
       - name: Upload historical SDK runtime DLLs
-        if: inputs.sdk-ref != ''
+        if: inputs.sdk-ref != '' && matrix.variant == '0'
         uses: actions/upload-artifact@v7
         with:
           name: docker-sdk-runtime
@@ -176,38 +180,58 @@ jobs:
             "${env:MSYS2_LOCATION}\usr\bin\msys-2.0.dll"
           Get-FileHash "${env:MSYS2_LOCATION}\usr\bin\msys-2.0.dll"
 
-      - name: Update MSYS2 in Docker
+      - name: Prepare runtime for Docker
+        id: runtime
         shell: pwsh
         env:
           MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
           SDK_REF: ${{ inputs.sdk-ref }}
+          VARIANT: ${{ matrix.variant }}
         run: |
-          $variants = @('installed')
-          if ($env:SDK_REF) { $variants = @('0', '1') }
-          $failed = $false
-          foreach ($variant in $variants) {
-            Write-Host "Testing runtime variant: $variant"
-            $location = $env:MSYS2_LOCATION
-            $shellOptions = @('--login')
-            if ($env:SDK_REF) {
-              $shellOptions = @('--noprofile', '--norc')
-              $location = Join-Path $env:RUNNER_TEMP "sdk-msys64-$variant"
-              Copy-Item -LiteralPath $env:MSYS2_LOCATION -Destination $location -Recurse
-              foreach ($exe in @('bash.exe', 'sh.exe', 'pacman.exe', 'uname.exe')) {
-                Copy-Item "sdk-$exe" "$location\usr\bin\$exe"
-              }
-              Copy-Item "sdk-runtime-$variant.dll" `
-                "$location\usr\bin\msys-2.0.dll"
-              Get-FileHash "$location\usr\bin\msys-2.0.dll"
+          Write-Host "Testing runtime variant: $env:VARIANT"
+          $location = $env:MSYS2_LOCATION
+          if ($env:SDK_REF) {
+            $location = Join-Path $env:RUNNER_TEMP "sdk-msys64-$env:VARIANT"
+            Copy-Item -LiteralPath $env:MSYS2_LOCATION -Destination $location -Recurse
+            foreach ($exe in @('bash.exe', 'sh.exe', 'pacman.exe')) {
+              Copy-Item "sdk-$exe" "$location\usr\bin\$exe"
             }
-            docker run --rm --user ContainerAdministrator `
-              -v "${location}:C:\msys64" `
-              -e MSYSTEM=MSYS -e CHERE_INVOKING=1 `
-              $env:IMAGE C:\msys64\usr\bin\bash.exe @shellOptions -c `
-              'export PATH=/usr/bin:$PATH; uname -a && pacman --version && pacman -Q msys2-runtime pacman && pacman -Syu --noconfirm'
-            if ($LASTEXITCODE -ne 0) {
-              Write-Output "::error::Runtime variant $variant exited with code $LASTEXITCODE"
-              $failed = $true
-            }
+            Copy-Item "sdk-runtime-$env:VARIANT.dll" `
+              "$location\usr\bin\msys-2.0.dll"
           }
-          if ($failed) { exit 1 }
+          Get-FileHash "$location\usr\bin\msys-2.0.dll"
+          "location=$location" >> $env:GITHUB_OUTPUT
+
+      - name: Check historical pacman startup
+        if: inputs.sdk-ref != ''
+        timeout-minutes: 2
+        shell: pwsh
+        env:
+          MSYS2_LOCATION: ${{ steps.runtime.outputs.location }}
+        run: |
+          docker run --rm --user ContainerAdministrator `
+            -v "${env:MSYS2_LOCATION}:C:\msys64" `
+            -e MSYSTEM=MSYS `
+            -e 'PATH=C:\msys64\usr\bin;C:\Windows\System32;C:\Windows' `
+            $env:IMAGE C:\msys64\usr\bin\pacman.exe --version
+          exit $LASTEXITCODE
+
+      - name: Update MSYS2 in Docker
+        timeout-minutes: 3
+        shell: pwsh
+        env:
+          MSYS2_LOCATION: ${{ steps.runtime.outputs.location }}
+          SDK_REF: ${{ inputs.sdk-ref }}
+        run: |
+          if ($env:SDK_REF) {
+            $command = @('C:\msys64\usr\bin\pacman.exe', '-Syu', '--noconfirm')
+          } else {
+            $command = @('C:\msys64\usr\bin\bash.exe', '--login', '-c',
+              'uname -a && pacman --version && pacman -Q msys2-runtime pacman && pacman -Syu --noconfirm')
+          }
+          docker run --rm --user ContainerAdministrator `
+            -v "${env:MSYS2_LOCATION}:C:\msys64" `
+            -e MSYSTEM=MSYS -e CHERE_INVOKING=1 `
+            -e 'PATH=C:\msys64\usr\bin;C:\Windows\System32;C:\Windows' `
+            $env:IMAGE @command
+          exit $LASTEXITCODE
