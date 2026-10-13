@@ -114,6 +114,8 @@ jobs:
           peflags -d "$dll"
           peflags -d"$VARIANT" -d "$dll"
           objdump -p "$dll" > sdk-runtime-headers.txt
+          sed 's/^[[:space:]]*SigLevel[[:space:]]*=.*/SigLevel = Never/' \
+            sdk/etc/pacman.conf > sdk/etc/pacman-ci.conf
           if test "$VARIANT" = 1
           then
             grep -q DYNAMIC_BASE sdk-runtime-headers.txt
@@ -248,7 +250,8 @@ jobs:
           SDK_REF: ${{ inputs.sdk-ref }}
         run: |
           if ($env:SDK_REF) {
-            $command = @('C:\msys64\usr\bin\pacman.exe', '-Syu', '--noconfirm')
+            $command = @('C:\msys64\usr\bin\pacman.exe',
+              '--config', '/etc/pacman-ci.conf', '-Syu', '--noconfirm')
           } else {
             $command = @('C:\msys64\usr\bin\bash.exe', '--login', '-c',
               'uname -a && pacman --version && pacman -Q msys2-runtime pacman && pacman -Syu --noconfirm')
