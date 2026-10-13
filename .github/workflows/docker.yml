@@ -110,6 +110,7 @@ jobs:
         run: |
           echo "Git SDK source: $SDK_REF"
           dll=sdk/usr/bin/msys-2.0.dll
+          cp "$dll" sdk-runtime-original.dll
           peflags -d "$dll"
           peflags -d"$VARIANT" -d "$dll"
           objdump -p "$dll" > sdk-runtime-headers.txt
@@ -130,6 +131,7 @@ jobs:
           name: docker-sdk-runtime-${{ matrix.variant }}
           path: |
             sdk/usr/bin/msys-2.0.dll
+            sdk-runtime-original.dll
             sdk-runtime-headers.txt
           if-no-files-found: error
 
@@ -197,12 +199,28 @@ jobs:
             $location = Join-Path $env:GITHUB_WORKSPACE 'sdk'
             $changes = @(git -C $location diff --name-only)
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            if ($env:VARIANT -eq '0' -and $changes.Count -ne 0) {
-              throw 'The control SDK differs from its historical snapshot'
+            $unexpected = @($changes | Where-Object { $_ -ne 'usr/bin/msys-2.0.dll' })
+            if ($unexpected.Count -ne 0) {
+              throw "Unexpected SDK changes: $($unexpected -join ', ')"
             }
-            if ($env:VARIANT -eq '1' -and
-                ($changes.Count -ne 1 -or $changes[0] -ne 'usr/bin/msys-2.0.dll')) {
-              throw 'Only the runtime DLL may differ from the historical snapshot'
+            $expected = [IO.File]::ReadAllBytes(
+              (Join-Path $env:GITHUB_WORKSPACE 'sdk-runtime-original.dll'))
+            if ($expected.Length -lt 0x40) { throw 'Invalid original runtime DLL' }
+            $peOffset = [BitConverter]::ToInt32($expected, 0x3c)
+            $flagOffset = $peOffset + 24 + 70
+            if ($peOffset -lt 0 -or $flagOffset -ge $expected.Length -or
+                [BitConverter]::ToUInt32($expected, $peOffset) -ne 0x4550) {
+              throw 'Invalid original runtime PE header'
+            }
+            $expected[$flagOffset] = $expected[$flagOffset] -band 0xbf
+            if ($env:VARIANT -eq '1') {
+              $expected[$flagOffset] = $expected[$flagOffset] -bor 0x40
+            }
+            $expectedHash = [Convert]::ToHexString(
+              [Security.Cryptography.SHA256]::HashData($expected))
+            $actualHash = (Get-FileHash "$location\usr\bin\msys-2.0.dll").Hash
+            if ($actualHash -ne $expectedHash) {
+              throw 'The runtime DLL differs by more than the requested dynamicbase bit'
             }
           }
           Get-FileHash "$location\usr\bin\msys-2.0.dll"
