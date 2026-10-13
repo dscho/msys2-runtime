@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       sdk-ref:
-        description: Git SDK commit whose runtime DLL to test with dynamicbase off and on
+        description: Complete Git SDK snapshot to test with dynamicbase off and on
         type: string
         default: ''
       runtime-repository:
@@ -47,6 +47,22 @@ jobs:
         with:
           repository: ${{ inputs.runtime-repository || github.repository }}
           ref: ${{ inputs.runtime-ref }}
+
+      - name: Preserve historical SDK line endings
+        if: inputs.sdk-ref != ''
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Checkout the complete historical Git SDK
+        if: inputs.sdk-ref != ''
+        uses: actions/checkout@v7
+        with:
+          repository: git-for-windows/git-sdk-64
+          ref: ${{ inputs.sdk-ref }}
+          path: sdk
+          persist-credentials: false
 
       - name: Set up the current MSYS2 runtime
         id: msys2
@@ -90,44 +106,31 @@ jobs:
         shell: msys2 {0}
         env:
           SDK_REF: ${{ inputs.sdk-ref }}
+          VARIANT: ${{ matrix.variant }}
         run: |
           echo "Git SDK source: $SDK_REF"
-          curl --fail --location \
-            "https://raw.githubusercontent.com/git-for-windows/git-sdk-64/$SDK_REF/usr/bin/msys-2.0.dll" \
-            -o sdk-runtime-original.dll
-          for exe in bash.exe sh.exe pacman.exe
-          do
-            curl --fail --location \
-              "https://raw.githubusercontent.com/git-for-windows/git-sdk-64/$SDK_REF/usr/bin/$exe" \
-              -o "sdk-$exe"
-          done
-          peflags -d sdk-runtime-original.dll
-          for flag in 0 1
-          do
-            dll="sdk-runtime-$flag.dll"
-            cp sdk-runtime-original.dll "$dll"
-            peflags -d"$flag" -d "$dll"
-            objdump -p "$dll" > "sdk-runtime-$flag-headers.txt"
-            if test "$flag" = 1
-            then
-              grep -q DYNAMIC_BASE "sdk-runtime-$flag-headers.txt"
-            elif grep -q DYNAMIC_BASE "sdk-runtime-$flag-headers.txt"
-            then
-              echo 'The control DLL unexpectedly enables dynamicbase' >&2
-              exit 1
-            fi
-          done
-          sha256sum sdk-runtime-original.dll sdk-runtime-0.dll sdk-runtime-1.dll sdk-*.exe
+          dll=sdk/usr/bin/msys-2.0.dll
+          peflags -d "$dll"
+          peflags -d"$VARIANT" -d "$dll"
+          objdump -p "$dll" > sdk-runtime-headers.txt
+          if test "$VARIANT" = 1
+          then
+            grep -q DYNAMIC_BASE sdk-runtime-headers.txt
+          elif grep -q DYNAMIC_BASE sdk-runtime-headers.txt
+          then
+            echo 'The control DLL unexpectedly enables dynamicbase' >&2
+            exit 1
+          fi
+          sha256sum "$dll" sdk/usr/bin/pacman.exe sdk/usr/bin/sh.exe
 
       - name: Upload historical SDK runtime DLLs
-        if: inputs.sdk-ref != '' && matrix.variant == '0'
+        if: inputs.sdk-ref != ''
         uses: actions/upload-artifact@v7
         with:
-          name: docker-sdk-runtime
+          name: docker-sdk-runtime-${{ matrix.variant }}
           path: |
-            sdk-runtime-*.dll
-            sdk-runtime-*-headers.txt
-            sdk-*.exe
+            sdk/usr/bin/msys-2.0.dll
+            sdk-runtime-headers.txt
           if-no-files-found: error
 
       - name: Build the runtime DLL
@@ -191,13 +194,16 @@ jobs:
           Write-Host "Testing runtime variant: $env:VARIANT"
           $location = $env:MSYS2_LOCATION
           if ($env:SDK_REF) {
-            $location = Join-Path $env:RUNNER_TEMP "sdk-msys64-$env:VARIANT"
-            Copy-Item -LiteralPath $env:MSYS2_LOCATION -Destination $location -Recurse
-            foreach ($exe in @('bash.exe', 'sh.exe', 'pacman.exe')) {
-              Copy-Item "sdk-$exe" "$location\usr\bin\$exe"
+            $location = Join-Path $env:GITHUB_WORKSPACE 'sdk'
+            $changes = @(git -C $location diff --name-only)
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            if ($env:VARIANT -eq '0' -and $changes.Count -ne 0) {
+              throw 'The control SDK differs from its historical snapshot'
             }
-            Copy-Item "sdk-runtime-$env:VARIANT.dll" `
-              "$location\usr\bin\msys-2.0.dll"
+            if ($env:VARIANT -eq '1' -and
+                ($changes.Count -ne 1 -or $changes[0] -ne 'usr/bin/msys-2.0.dll')) {
+              throw 'Only the runtime DLL may differ from the historical snapshot'
+            }
           }
           Get-FileHash "$location\usr\bin\msys-2.0.dll"
           "location=$location" >> $env:GITHUB_OUTPUT
