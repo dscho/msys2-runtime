@@ -129,28 +129,12 @@ jobs:
             packages/keyring.pkg.tar.zst \
             e90fb4413f6056dbc8b2df9eac670924aa2851151bc97569e7df12c928acc209
           tar -xf msys2-20221216.tar.xz -C sdk --strip-components=1
+          tar -xf packages/runtime.pkg.tar.zst -C sdk usr
+          printf '%s  %s\n' \
+            eda9f89e032b2d1486c2bb3a66b01c9bae30372a7ff7c3bf16b364ea93b17ef4 \
+            sdk/usr/bin/msys-2.0.dll | sha256sum -c -
           sed 's/^[[:space:]]*SigLevel[[:space:]]*=.*/SigLevel = Never/' \
             sdk/etc/pacman.conf > sdk/etc/pacman-ci.conf
-
-      - name: Install the archived optional runtime
-        if: inputs.msys2-2022
-        timeout-minutes: 2
-        shell: pwsh
-        run: |
-          $location = Join-Path $env:GITHUB_WORKSPACE 'sdk'
-          $packages = Join-Path $env:GITHUB_WORKSPACE 'packages'
-          docker run --rm --user ContainerAdministrator `
-            -v "${location}:C:\msys64" -v "${packages}:C:\packages:ro" `
-            -e MSYSTEM=MSYS `
-            -e 'PATH=C:\msys64\usr\bin;C:\Windows\System32;C:\Windows' `
-            $env:IMAGE C:\msys64\usr\bin\pacman.exe `
-            --config /etc/pacman-ci.conf --ask 4 --noscriptlet --noconfirm `
-            -U C:\packages\runtime.pkg.tar.zst
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $hash = (Get-FileHash "$location\usr\bin\msys-2.0.dll").Hash
-          if ($hash -ne 'eda9f89e032b2d1486c2bb3a66b01c9bae30372a7ff7c3bf16b364ea93b17ef4') {
-            throw 'The archived 3.4.2 runtime was not installed'
-          }
 
       - name: Prepare historical runtime DLLs
         if: inputs.sdk-ref != '' || inputs.msys2-2022
