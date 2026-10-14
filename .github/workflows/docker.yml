@@ -4,6 +4,10 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      msys2-2022:
+        description: Test the December 2022 MSYS2 base with its archived 3.4.2 runtime
+        type: boolean
+        default: false
       sdk-ref:
         description: Complete Git SDK snapshot to test with dynamicbase off and on
         type: string
@@ -27,19 +31,21 @@ permissions:
 jobs:
   pacman:
     runs-on: windows-2022
-    timeout-minutes: ${{ inputs.sdk-ref != '' && 8 || 45 }}
+    timeout-minutes: ${{ (inputs.sdk-ref != '' || inputs.msys2-2022) && 8 || 45 }}
     strategy:
       fail-fast: false
       matrix:
-        variant: ${{ fromJSON(inputs.sdk-ref != '' && '["0", "1"]' || '["installed"]') }}
+        variant: ${{ fromJSON((inputs.sdk-ref != '' || inputs.msys2-2022) && '["0", "1"]' || '["installed"]') }}
     env:
       IMAGE: mcr.microsoft.com/windows/servercore:ltsc2022
 
     steps:
       - name: Validate runtime selection
-        if: inputs.sdk-ref != '' && inputs.runtime-ref != ''
+        if: >-
+          (inputs.sdk-ref != '' && inputs.runtime-ref != '') ||
+          (inputs.msys2-2022 && (inputs.sdk-ref != '' || inputs.runtime-ref != ''))
         shell: pwsh
-        run: throw 'Select either an SDK DLL or a source build, not both'
+        run: throw 'Select only one historical installation or source build'
 
       - name: Checkout runtime sources
         if: inputs.runtime-ref != ''
@@ -73,7 +79,7 @@ jobs:
           install: >-
             ${{ inputs.runtime-ref != '' &&
                 'base-devel autotools cocom gcc gettext-devel git libiconv-devel perl zlib-devel libzstd-devel'
-                || (inputs.sdk-ref != '' && 'binutils rebase' || '') }}
+                || ((inputs.sdk-ref != '' || inputs.msys2-2022) && 'binutils rebase' || '') }}
 
       - name: Pull Server Core
         shell: pwsh
@@ -101,14 +107,59 @@ jobs:
           docker image inspect $env:IMAGE --format '{{json .RepoDigests}}'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Prepare historical SDK runtime DLLs
-        if: inputs.sdk-ref != ''
+      - name: Prepare the complete December 2022 MSYS2 installation
+        if: inputs.msys2-2022
+        shell: msys2 {0}
+        run: |
+          fetch() {
+            curl --fail --silent --show-error --location "$1" -o "$2"
+            printf '%s  %s\n' "$3" "$2" | sha256sum -c -
+          }
+          mkdir -p sdk packages
+          fetch \
+            https://github.com/msys2/msys2-installer/releases/download/2022-12-16/msys2-base-x86_64-20221216.tar.xz \
+            msys2-20221216.tar.xz \
+            246177c84f42fdad0a4ebad53af2e0dd6f29b61463d91c52ebd3d0b0d916ecd1
+          fetch \
+            https://github.com/msys2/msys2-archive/releases/download/2022-12-16-msys-x86_64/msys2-runtime-3.4-3.4.2-1-x86_64.pkg.tar.zst \
+            packages/runtime.pkg.tar.zst \
+            c167b9f53057bb2b87b8581c7f821eccdc8bdd4ccfed64eac0e4b3aa2e6dd7ad
+          fetch \
+            https://github.com/msys2/msys2-archive/releases/download/2022-12-16-msys-x86_64/msys2-keyring-1.20221024-1-any.pkg.tar.zst \
+            packages/keyring.pkg.tar.zst \
+            e90fb4413f6056dbc8b2df9eac670924aa2851151bc97569e7df12c928acc209
+          tar -xf msys2-20221216.tar.xz -C sdk --strip-components=1
+          sed 's/^[[:space:]]*SigLevel[[:space:]]*=.*/SigLevel = Never/' \
+            sdk/etc/pacman.conf > sdk/etc/pacman-ci.conf
+
+      - name: Install the archived optional runtime
+        if: inputs.msys2-2022
+        timeout-minutes: 2
+        shell: pwsh
+        run: |
+          $location = Join-Path $env:GITHUB_WORKSPACE 'sdk'
+          $packages = Join-Path $env:GITHUB_WORKSPACE 'packages'
+          docker run --rm --user ContainerAdministrator `
+            -v "${location}:C:\msys64" -v "${packages}:C:\packages:ro" `
+            -e MSYSTEM=MSYS `
+            -e 'PATH=C:\msys64\usr\bin;C:\Windows\System32;C:\Windows' `
+            $env:IMAGE C:\msys64\usr\bin\pacman.exe `
+            --config /etc/pacman-ci.conf --ask 4 --noscriptlet --noconfirm `
+            -U C:\packages\runtime.pkg.tar.zst
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $hash = (Get-FileHash "$location\usr\bin\msys-2.0.dll").Hash
+          if ($hash -ne 'eda9f89e032b2d1486c2bb3a66b01c9bae30372a7ff7c3bf16b364ea93b17ef4') {
+            throw 'The archived 3.4.2 runtime was not installed'
+          }
+
+      - name: Prepare historical runtime DLLs
+        if: inputs.sdk-ref != '' || inputs.msys2-2022
         shell: msys2 {0}
         env:
           SDK_REF: ${{ inputs.sdk-ref }}
           VARIANT: ${{ matrix.variant }}
         run: |
-          echo "Git SDK source: $SDK_REF"
+          echo "Historical source: ${SDK_REF:-December 2022 MSYS2 base}"
           dll=sdk/usr/bin/msys-2.0.dll
           cp "$dll" sdk-runtime-original.dll
           peflags -d "$dll"
@@ -127,7 +178,7 @@ jobs:
           sha256sum "$dll" sdk/usr/bin/pacman.exe sdk/usr/bin/sh.exe
 
       - name: Upload historical SDK runtime DLLs
-        if: inputs.sdk-ref != ''
+        if: inputs.sdk-ref != '' || inputs.msys2-2022
         uses: actions/upload-artifact@v7
         with:
           name: docker-sdk-runtime-${{ matrix.variant }}
@@ -193,17 +244,20 @@ jobs:
         env:
           MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
           SDK_REF: ${{ inputs.sdk-ref }}
+          MSYS2_2022: ${{ inputs.msys2-2022 }}
           VARIANT: ${{ matrix.variant }}
         run: |
           Write-Host "Testing runtime variant: $env:VARIANT"
           $location = $env:MSYS2_LOCATION
-          if ($env:SDK_REF) {
+          if ($env:SDK_REF -or $env:MSYS2_2022 -eq 'true') {
             $location = Join-Path $env:GITHUB_WORKSPACE 'sdk'
-            $changes = @(git -C $location diff --name-only)
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            $unexpected = @($changes | Where-Object { $_ -ne 'usr/bin/msys-2.0.dll' })
-            if ($unexpected.Count -ne 0) {
-              throw "Unexpected SDK changes: $($unexpected -join ', ')"
+            if ($env:SDK_REF) {
+              $changes = @(git -C $location diff --name-only)
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              $unexpected = @($changes | Where-Object { $_ -ne 'usr/bin/msys-2.0.dll' })
+              if ($unexpected.Count -ne 0) {
+                throw "Unexpected SDK changes: $($unexpected -join ', ')"
+              }
             }
             $expected = [IO.File]::ReadAllBytes(
               (Join-Path $env:GITHUB_WORKSPACE 'sdk-runtime-original.dll'))
@@ -229,7 +283,7 @@ jobs:
           "location=$location" >> $env:GITHUB_OUTPUT
 
       - name: Check historical pacman startup
-        if: inputs.sdk-ref != ''
+        if: inputs.sdk-ref != '' || inputs.msys2-2022
         timeout-minutes: 2
         shell: pwsh
         env:
@@ -243,6 +297,7 @@ jobs:
           exit $LASTEXITCODE
 
       - name: Update MSYS2 in Docker
+        if: '!inputs.msys2-2022'
         timeout-minutes: 3
         shell: pwsh
         env:
@@ -264,20 +319,28 @@ jobs:
           exit $LASTEXITCODE
 
       - name: Exercise historical pacman scriptlets
-        if: inputs.sdk-ref != ''
+        if: inputs.sdk-ref != '' || inputs.msys2-2022
         timeout-minutes: 2
         shell: pwsh
         env:
           MSYS2_LOCATION: ${{ steps.runtime.outputs.location }}
+          MSYS2_2022: ${{ inputs.msys2-2022 }}
         run: |
           $dll = "${env:MSYS2_LOCATION}\usr\bin\msys-2.0.dll"
           $before = (Get-FileHash $dll).Hash
+          $mounts = @('-v', "${env:MSYS2_LOCATION}:C:\msys64")
+          $transaction = @('-S', '--noconfirm', 'msys2-keyring')
+          if ($env:MSYS2_2022 -eq 'true') {
+            $packages = Join-Path $env:GITHUB_WORKSPACE 'packages'
+            $mounts += @('-v', "${packages}:C:\packages:ro")
+            $transaction = @('-U', '--noconfirm', 'C:\packages\keyring.pkg.tar.zst')
+          }
           docker run --rm --user ContainerAdministrator `
-            -v "${env:MSYS2_LOCATION}:C:\msys64" `
+            @mounts `
             -e MSYSTEM=MSYS `
             -e 'PATH=C:\msys64\usr\bin;C:\Windows\System32;C:\Windows' `
             $env:IMAGE C:\msys64\usr\bin\pacman.exe `
-            --config /etc/pacman-ci.conf --debug -S --noconfirm msys2-keyring `
+            --config /etc/pacman-ci.conf --debug @transaction `
             2>&1 | Tee-Object -FilePath sdk-fork-transaction.log
           $code = $LASTEXITCODE
           if ((Get-FileHash $dll).Hash -ne $before) {
@@ -294,7 +357,7 @@ jobs:
           }
 
       - name: Upload historical fork transaction log
-        if: always() && inputs.sdk-ref != ''
+        if: always() && (inputs.sdk-ref != '' || inputs.msys2-2022)
         uses: actions/upload-artifact@v7
         with:
           name: docker-fork-log-${{ matrix.variant }}
