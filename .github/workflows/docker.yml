@@ -4,6 +4,14 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      image:
+        description: Container image to test
+        type: string
+        default: mcr.microsoft.com/windows/servercore:ltsc2022
+      isolation:
+        description: Docker container isolation mode (process or hyperv)
+        type: string
+        default: process
       msys2-2022:
         description: Test the December 2022 MSYS2 base with its archived 3.4.2 runtime
         type: boolean
@@ -31,13 +39,14 @@ permissions:
 jobs:
   pacman:
     runs-on: windows-2022
-    timeout-minutes: ${{ (inputs.sdk-ref != '' || inputs.msys2-2022) && 8 || 45 }}
+    timeout-minutes: ${{ (inputs.sdk-ref != '' || inputs.msys2-2022) && 20 || 45 }}
     strategy:
       fail-fast: false
       matrix:
         variant: ${{ fromJSON((inputs.sdk-ref != '' || inputs.msys2-2022) && '["0", "1"]' || '["installed"]') }}
     env:
-      IMAGE: mcr.microsoft.com/windows/servercore:ltsc2022
+      IMAGE: ${{ inputs.image || 'mcr.microsoft.com/windows/servercore:ltsc2022' }}
+      ISOLATION: ${{ inputs.isolation || 'process' }}
 
     steps:
       - name: Validate runtime selection
@@ -268,12 +277,12 @@ jobs:
 
       - name: Check historical pacman startup
         if: inputs.sdk-ref != '' || inputs.msys2-2022
-        timeout-minutes: 2
+        timeout-minutes: 4
         shell: pwsh
         env:
           MSYS2_LOCATION: ${{ steps.runtime.outputs.location }}
         run: |
-          docker run --rm --user ContainerAdministrator `
+          docker run --rm --isolation=$env:ISOLATION --user ContainerAdministrator `
             -v "${env:MSYS2_LOCATION}:C:\msys64" `
             -e MSYSTEM=MSYS `
             -e 'PATH=C:\msys64\usr\bin;C:\Windows\System32;C:\Windows' `
@@ -282,7 +291,7 @@ jobs:
 
       - name: Update MSYS2 in Docker
         if: '!inputs.msys2-2022'
-        timeout-minutes: 3
+        timeout-minutes: 4
         shell: pwsh
         env:
           MSYS2_LOCATION: ${{ steps.runtime.outputs.location }}
@@ -295,7 +304,7 @@ jobs:
             $command = @('C:\msys64\usr\bin\bash.exe', '--login', '-c',
               'uname -a && pacman --version && pacman -Q msys2-runtime pacman && pacman -Syu --noconfirm')
           }
-          docker run --rm --user ContainerAdministrator `
+          docker run --rm --isolation=$env:ISOLATION --user ContainerAdministrator `
             -v "${env:MSYS2_LOCATION}:C:\msys64" `
             -e MSYSTEM=MSYS -e CHERE_INVOKING=1 `
             -e 'PATH=C:\msys64\usr\bin;C:\Windows\System32;C:\Windows' `
@@ -304,7 +313,7 @@ jobs:
 
       - name: Exercise historical pacman scriptlets
         if: inputs.sdk-ref != '' || inputs.msys2-2022
-        timeout-minutes: 2
+        timeout-minutes: 5
         shell: pwsh
         env:
           MSYS2_LOCATION: ${{ steps.runtime.outputs.location }}
@@ -313,18 +322,24 @@ jobs:
           $dll = "${env:MSYS2_LOCATION}\usr\bin\msys-2.0.dll"
           $before = (Get-FileHash $dll).Hash
           $mounts = @('-v', "${env:MSYS2_LOCATION}:C:\msys64")
-          $transaction = @('-S', '--noconfirm', 'msys2-keyring')
+          $command = @(
+            'C:\msys64\usr\bin\pacman.exe',
+            '--config', '/etc/pacman-ci.conf',
+            '--debug', '-S', '--noconfirm', 'msys2-keyring'
+          )
           if ($env:MSYS2_2022 -eq 'true') {
             $packages = Join-Path $env:GITHUB_WORKSPACE 'packages'
             $mounts += @('-v', "${packages}:C:\packages:ro")
-            $transaction = @('-U', '--noconfirm', 'C:\packages\keyring.pkg.tar.zst')
+            $command = @(
+              'C:\msys64\usr\bin\bash.exe', '-lc',
+              'pacman --config /etc/pacman-ci.conf --debug -U --noconfirm /c/packages/keyring.pkg.tar.zst; ret=$?; gpgconf --kill all >/dev/null 2>&1 || true; exit $ret'
+            )
           }
-          docker run --rm --user ContainerAdministrator `
+          docker run --rm --isolation=$env:ISOLATION --user ContainerAdministrator `
             @mounts `
             -e MSYSTEM=MSYS `
             -e 'PATH=C:\msys64\usr\bin;C:\Windows\System32;C:\Windows' `
-            $env:IMAGE C:\msys64\usr\bin\pacman.exe `
-            --config /etc/pacman-ci.conf --debug @transaction `
+            $env:IMAGE @command `
             2>&1 | Tee-Object -FilePath sdk-fork-transaction.log
           $code = $LASTEXITCODE
           if ((Get-FileHash $dll).Hash -ne $before) {
