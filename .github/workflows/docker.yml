@@ -39,7 +39,7 @@ permissions:
 jobs:
   pacman:
     runs-on: windows-2022
-    timeout-minutes: ${{ (inputs.sdk-ref != '' || inputs.msys2-2022) && 20 || 45 }}
+    timeout-minutes: ${{ (inputs.sdk-ref != '' || inputs.msys2-2022) && 35 || 45 }}
     strategy:
       fail-fast: false
       matrix:
@@ -138,12 +138,15 @@ jobs:
             packages/keyring.pkg.tar.zst \
             e90fb4413f6056dbc8b2df9eac670924aa2851151bc97569e7df12c928acc209
           tar -xf msys2-20221216.tar.xz -C sdk --strip-components=1
+          sed -i 's/--refresh-keys/--version/g' \
+            sdk/etc/post-install/07-pacman-key.post
+          sed 's/^[[:space:]]*SigLevel[[:space:]]*=.*/SigLevel = Never/' \
+            sdk/etc/pacman.conf > sdk/etc/pacman-ci.conf
+          tar -cf packages/sdk-base.tar -C sdk .
           tar -xf packages/runtime.pkg.tar.zst -C sdk usr
           printf '%s  %s\n' \
             eda9f89e032b2d1486c2bb3a66b01c9bae30372a7ff7c3bf16b364ea93b17ef4 \
             sdk/usr/bin/msys-2.0.dll | sha256sum -c -
-          sed 's/^[[:space:]]*SigLevel[[:space:]]*=.*/SigLevel = Never/' \
-            sdk/etc/pacman.conf > sdk/etc/pacman-ci.conf
 
       - name: Prepare historical runtime DLLs
         if: inputs.sdk-ref != '' || inputs.msys2-2022
@@ -171,7 +174,19 @@ jobs:
           sha256sum "$dll" sdk/usr/bin/pacman.exe sdk/usr/bin/sh.exe
           if test -d packages
           then
-            tar -cf packages/sdk.tar -C sdk .
+            rm -rf pkg-repack
+            mkdir pkg-repack
+            tar -xf packages/runtime.pkg.tar.zst -C pkg-repack
+            sed -i \
+              -e 's/^pkgname = msys2-runtime-3\.4$/pkgname = msys2-runtime/' \
+              -e 's/^pkgbase = msys2-runtime-3\.4$/pkgbase = msys2-runtime/' \
+              -e '/^conflict = msys2-runtime$/d' \
+              -e '/^provides = msys2-runtime=/d' \
+              pkg-repack/.PKGINFO
+            cp "$dll" pkg-repack/usr/bin/msys-2.0.dll
+            tar --zstd -cf packages/runtime-variant.pkg.tar.zst \
+              -C pkg-repack .BUILDINFO .MTREE .PKGINFO usr
+            rm -rf pkg-repack
           fi
 
       - name: Upload historical SDK runtime DLLs
@@ -317,7 +332,7 @@ jobs:
 
       - name: Exercise historical pacman scriptlets
         if: inputs.sdk-ref != '' || inputs.msys2-2022
-        timeout-minutes: 5
+        timeout-minutes: 20
         shell: pwsh
         env:
           MSYS2_LOCATION: ${{ steps.runtime.outputs.location }}
@@ -325,31 +340,14 @@ jobs:
         run: |
           $dll = "${env:MSYS2_LOCATION}\usr\bin\msys-2.0.dll"
           $before = (Get-FileHash $dll).Hash
-          $isolations = @($env:ISOLATION)
-          $mounts = @('-v', "${env:MSYS2_LOCATION}:C:\msys64")
-          $command = @(
-            'C:\msys64\usr\bin\pacman.exe',
-            '--config', '/etc/pacman-ci.conf',
-            '--debug', '-S', '--noconfirm', 'msys2-keyring'
-          )
-          if ($env:MSYS2_2022 -eq 'true') {
-            $isolations = @('process', 'hyperv')
-            $packages = Join-Path $env:GITHUB_WORKSPACE 'packages'
-            $mounts = @('-v', "${packages}:C:\packages:ro")
-            $command = @(
-              'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe',
-              '-NoProfile', '-Command',
-              "New-Item -ItemType Directory -Path C:\msys64 -Force > `$null; C:\Windows\System32\tar.exe -xf C:\packages\sdk.tar -C C:\msys64; if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }; C:\msys64\usr\bin\bash.exe -lc 'pacman --config /etc/pacman-ci.conf --debug -U --noconfirm /c/packages/keyring.pkg.tar.zst; ret=`$?; gpgconf --kill all >/dev/null 2>&1 || true; exit `$ret'; if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }; if ((Get-FileHash C:\msys64\usr\bin\msys-2.0.dll).Hash -ne '$before') { throw 'The transaction replaced the runtime DLL under test' }"
-            )
-          }
-          foreach ($iso in $isolations) {
-            $log = "sdk-fork-transaction-$iso.log"
-            Write-Host "Running transaction with isolation=$iso"
-            docker run --rm --isolation=$iso --user ContainerAdministrator `
-              @mounts `
+          if ($env:MSYS2_2022 -ne 'true') {
+            $log = "sdk-fork-transaction-$($env:ISOLATION).log"
+            docker run --rm --isolation=$env:ISOLATION --user ContainerAdministrator `
+              -v "${env:MSYS2_LOCATION}:C:\msys64" `
               -e MSYSTEM=MSYS `
               -e 'PATH=C:\msys64\usr\bin;C:\Windows\System32;C:\Windows' `
-              $env:IMAGE @command `
+              $env:IMAGE C:\msys64\usr\bin\pacman.exe `
+              --config /etc/pacman-ci.conf --debug -S --noconfirm msys2-keyring `
               2>&1 | Tee-Object -FilePath $log
             $code = $LASTEXITCODE
             if ((Get-FileHash $dll).Hash -ne $before) {
@@ -357,12 +355,78 @@ jobs:
             }
             if (Select-String -Path $log `
                 -Pattern 'child_copy:|dofork:|child_info_fork::abort|fork: retry') {
-              throw "The historical runtime reported a fork failure (isolation=$iso)"
+              throw 'The historical runtime reported a fork failure'
             }
             if ($code -ne 0) { exit $code }
             if (-not (Select-String -Path $log `
                 -Pattern 'debug: executing.*(sh|bash)')) {
-              throw "The transaction did not reach the shell scriptlet fork path (isolation=$iso)"
+              throw 'The transaction did not reach the shell scriptlet fork path'
+            }
+            exit 0
+          }
+          $packages = Join-Path $env:GITHUB_WORKSPACE 'packages'
+          $buildScript = @"
+          `$ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path C:\msys64 -Force > `$null
+          C:\Windows\System32\tar.exe -xf C:\packages\sdk-base.tar -C C:\msys64
+          if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
+          `$env:MSYSTEM = 'MSYS'
+          `$env:PATH = 'C:\msys64\usr\bin;C:\Windows\System32;C:\Windows'
+          function msys([string]`$cmd) {
+            C:\msys64\usr\bin\bash.exe -lc `$cmd
+            if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
+          }
+          msys 'uname -a'
+          msys 'pacman --config /etc/pacman-ci.conf --noconfirm -U /c/packages/runtime-variant.pkg.tar.zst'
+          if ((Get-FileHash C:\msys64\usr\bin\msys-2.0.dll).Hash -ne '$before') {
+            throw 'The in-place upgrade did not install the expected runtime DLL'
+          }
+          msys 'uname -a && pacman --config /etc/pacman-ci.conf --debug --noconfirm -U /c/packages/keyring.pkg.tar.zst'
+          C:\msys64\usr\bin\gpgconf.exe --kill all > `$null 2>&1
+          Remove-Item -LiteralPath 'C:\`$Recycle.Bin' -Recurse -Force -ErrorAction SilentlyContinue
+          exit 0
+          "@
+          [IO.File]::WriteAllText((Join-Path $packages 'build-step.ps1'), $buildScript)
+          $targets = @(
+            @{ Name = '2022-process'; Image = 'mcr.microsoft.com/windows/servercore:10.0.20348.169'; Isolation = 'process' },
+            @{ Name = '2022-hyperv';  Image = 'mcr.microsoft.com/windows/servercore:10.0.20348.169'; Isolation = 'hyperv' },
+            @{ Name = '2019-hyperv';  Image = 'mcr.microsoft.com/windows/servercore:10.0.17763.3770'; Isolation = 'hyperv' }
+          )
+          foreach ($t in $targets) {
+            $log = "sdk-fork-transaction-$($t.Name).log"
+            Write-Host "=== Testing $($t.Name) ($($t.Image), isolation=$($t.Isolation)) ==="
+            docker pull $t.Image
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $dockerfile = @"
+          FROM $($t.Image)
+          COPY sdk-base.tar runtime-variant.pkg.tar.zst keyring.pkg.tar.zst build-step.ps1 C:/packages/
+          RUN ["C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-NoProfile", "-File", "C:\\packages\\build-step.ps1"]
+          "@
+            [IO.File]::WriteAllText((Join-Path $packages 'Dockerfile'), $dockerfile)
+            $tag = "msys2-2022-$($t.Name)"
+            docker build --no-cache --isolation=$($t.Isolation) -t $tag $packages `
+              2>&1 | Tee-Object -FilePath $log
+            $buildCode = $LASTEXITCODE
+            if (Select-String -Path $log `
+                -Pattern 'child_copy:|dofork:|child_info_fork::abort|fork: retry') {
+              throw "The historical runtime reported a fork failure during docker build ($($t.Name))"
+            }
+            if ($buildCode -ne 0) { exit $buildCode }
+            docker run --rm --isolation=$($t.Isolation) --user ContainerAdministrator `
+              -e MSYSTEM=MSYS `
+              -e 'PATH=C:\msys64\usr\bin;C:\Windows\System32;C:\Windows' `
+              $tag C:\msys64\usr\bin\bash.exe -lc `
+              'uname -a && pacman --config /etc/pacman-ci.conf --debug --noconfirm -U /c/packages/keyring.pkg.tar.zst && pacman -Qk > /dev/null; ret=$?; gpgconf --kill all >/dev/null 2>&1 || true; exit $ret' `
+              2>&1 | Tee-Object -FilePath $log -Append
+            $runCode = $LASTEXITCODE
+            if (Select-String -Path $log `
+                -Pattern 'child_copy:|dofork:|child_info_fork::abort|fork: retry') {
+              throw "The historical runtime reported a fork failure during docker run ($($t.Name))"
+            }
+            if ($runCode -ne 0) { exit $runCode }
+            if (-not (Select-String -Path $log `
+                -Pattern 'debug: executing.*(sh|bash)')) {
+              throw "The transaction did not reach the shell scriptlet fork path ($($t.Name))"
             }
           }
 
