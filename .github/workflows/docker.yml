@@ -337,7 +337,8 @@ jobs:
             $packages = Join-Path $env:GITHUB_WORKSPACE 'packages'
             $mounts = @('-v', "${packages}:C:\packages:ro")
             $command = @(
-              'powershell.exe', '-NoProfile', '-Command',
+              'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe',
+              '-NoProfile', '-Command',
               "New-Item -ItemType Directory -Path C:\msys64 -Force > `$null; C:\Windows\System32\tar.exe -xf C:\packages\sdk.tar -C C:\msys64; if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }; C:\msys64\usr\bin\bash.exe -lc 'pacman --config /etc/pacman-ci.conf --debug -U --noconfirm /c/packages/keyring.pkg.tar.zst; ret=`$?; gpgconf --kill all >/dev/null 2>&1 || true; exit `$ret'; if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }; if ((Get-FileHash C:\msys64\usr\bin\msys-2.0.dll).Hash -ne '$before') { throw 'The transaction replaced the runtime DLL under test' }"
             )
           }
