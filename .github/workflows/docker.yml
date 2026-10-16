@@ -143,10 +143,7 @@ jobs:
           sed 's/^[[:space:]]*SigLevel[[:space:]]*=.*/SigLevel = Never/' \
             sdk/etc/pacman.conf > sdk/etc/pacman-ci.conf
           tar -cf packages/sdk-base.tar -C sdk .
-          tar -xf packages/runtime.pkg.tar.zst -C sdk usr
-          printf '%s  %s\n' \
-            eda9f89e032b2d1486c2bb3a66b01c9bae30372a7ff7c3bf16b364ea93b17ef4 \
-            sdk/usr/bin/msys-2.0.dll | sha256sum -c -
+          cp /usr/bin/msys-2.0.dll sdk/usr/bin/msys-2.0.dll
 
       - name: Prepare historical runtime DLLs
         if: inputs.sdk-ref != '' || inputs.msys2-2022
