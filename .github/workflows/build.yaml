@@ -59,7 +59,19 @@ jobs:
       CC: ${{ matrix.cc }}
       CXX: ${{ matrix.cxx }}
       FC: ${{ matrix.fc }}
+      INVESTIGATE_MSYS_FORK: >-
+        ${{ github.repository == 'dscho/msys2-runtime' &&
+            github.ref == 'refs/heads/test-MSYS-gcc' &&
+            github.event_name == 'push' &&
+            matrix.msystem == 'MSYS' && matrix.cc == 'gcc' &&
+            matrix.type != 'docker' }}
     steps:
+      - name: Checkout runtime source for investigation
+        if: env.INVESTIGATE_MSYS_FORK == 'true'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
       - id: msys2
         uses: msys2/setup-msys2@v2
         with:
@@ -91,12 +103,123 @@ jobs:
         run: uname -a
 
       - name: Avoid Rust DLL base collisions
-        if: matrix.msystem == 'MSYS' && matrix.type != 'docker'
+        if: >-
+          matrix.msystem == 'MSYS' && matrix.type != 'docker' &&
+          env.INVESTIGATE_MSYS_FORK != 'true'
         shell: msys2 {0}
         run: |
           # The output path changes ld's automatically generated DLL bases.
           echo 'CARGO_TARGET_DIR=/tmp/cargo-target' >> "$GITHUB_ENV"
 
       - name: Run tests
+        if: env.INVESTIGATE_MSYS_FORK != 'true'
         uses: msys2/msys2-tests@main
 
+      - name: Run native MSYS tests with logs
+        id: native-tests
+        if: env.INVESTIGATE_MSYS_FORK == 'true'
+        shell: msys2 {0}
+        run: |
+          set -o pipefail
+          mkdir -p fork-diagnostics
+          # Keep the action's original path: it affects DLL image bases.
+          root="$(cygpath -u "$RUNNER_TEMP")/../_actions"
+          root="$(cd "$root/msys2/msys2-tests/main" && pwd)"
+          echo "TEST_ACTION_PATH=$(cygpath -aw "$root")" >> "$GITHUB_ENV"
+          date -u '+Native test started: %FT%TZ' |
+            tee fork-diagnostics/native-tests.log
+          if bash "$root/run-tests.sh" </dev/null 2>&1 |
+            tee -a fork-diagnostics/native-tests.log; then
+            status=0
+          else
+            status=$?
+          fi
+          printf 'Native test exit status: %s\n' "$status" |
+            tee -a fork-diagnostics/native-tests.log
+          date -u '+Native test finished: %FT%TZ' |
+            tee -a fork-diagnostics/native-tests.log
+          exit "$status"
+
+      - name: Capture native MSYS test state
+        if: >-
+          always() && env.INVESTIGATE_MSYS_FORK == 'true' &&
+          (steps.native-tests.outcome == 'success' ||
+           steps.native-tests.outcome == 'failure')
+        shell: msys2 {0}
+        env:
+          NATIVE_TEST_OUTCOME: ${{ steps.native-tests.outcome }}
+        run: |
+          set -o pipefail
+          bash .github/ci/capture-msys-fork.sh </dev/null 2>&1 |
+            tee fork-diagnostics/capture.log
+
+      - name: Set up Copilot CLI
+        id: setup-copilot
+        if: >-
+          failure() && env.INVESTIGATE_MSYS_FORK == 'true' &&
+          steps.native-tests.outcome == 'failure'
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $null | npm.cmd install --global '@github/copilot@1.0.104' `
+            2>&1 | Tee-Object fork-diagnostics\copilot-setup.log
+          copilot --version |
+            Tee-Object -Append fork-diagnostics\copilot-setup.log
+
+      - name: Investigate native MSYS fork failure with Sonnet
+        if: >-
+          failure() && env.INVESTIGATE_MSYS_FORK == 'true' &&
+          steps.native-tests.outcome == 'failure' &&
+          steps.setup-copilot.outcome == 'success'
+        shell: pwsh
+        timeout-minutes: 120
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $env:COPILOT_HOME = Join-Path $env:GITHUB_WORKSPACE '.copilot-ci'
+          $guidance = 'https://raw.githubusercontent.com/' +
+            'git-for-windows/msys2-runtime/main/AGENTS.md'
+          Invoke-WebRequest $guidance -TimeoutSec 60 `
+            -OutFile fork-diagnostics\AGENTS.md
+          $prompt = 'Follow @.github/copilot-prompts/' +
+            'debug-native-msys-fork.md exactly. ' +
+            'Read @fork-diagnostics/AGENTS.md in full first.'
+          $secretVars = 'COPILOT_GITHUB_TOKEN,GITHUB_TOKEN,' +
+            'ACTIONS_RUNTIME_TOKEN,ACTIONS_ID_TOKEN_REQUEST_TOKEN'
+          $null | copilot -p $prompt `
+            --model claude-sonnet-5.5 `
+            --reasoning-effort max --context long_context `
+            --yolo --no-ask-user --no-auto-update `
+            "--secret-env-vars=$secretVars" `
+            --log-dir fork-diagnostics\copilot-logs `
+            --share fork-diagnostics\copilot-session.md `
+            2>&1 | Tee-Object fork-diagnostics\copilot-console.log
+
+      - name: Preserve investigation session and working diff
+        if: always() && env.INVESTIGATE_MSYS_FORK == 'true'
+        shell: pwsh
+        run: |
+          $out = 'fork-diagnostics'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          $state = Join-Path $env:GITHUB_WORKSPACE `
+            '.copilot-ci\session-state'
+          # Archive sessions, not Copilot's authentication/config files.
+          if (Test-Path $state) {
+            Copy-Item -Recurse $state "$out\copilot-session-state"
+          }
+          git diff --binary "--output=$out\working-tree.patch"
+          git status --short |
+            Out-File -Encoding utf8 "$out\working-tree-status.txt"
+
+      - name: Upload native MSYS investigation
+        if: always() && env.INVESTIGATE_MSYS_FORK == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-msys-fork-${{ github.run_id }}
+          path: fork-diagnostics/
+          include-hidden-files: true
