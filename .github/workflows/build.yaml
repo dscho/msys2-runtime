@@ -62,6 +62,36 @@ jobs:
       - id: matrix
         uses: msys2/msys2-tests/gha-matrix-gen@main
 
+  layer-reexec:
+    needs: [build]
+    strategy:
+      fail-fast: false
+      matrix:
+        round: [13, 14, 16]
+    name: layer re-exec round ${{ matrix.round }}
+    runs-on: windows-2022
+    timeout-minutes: 150
+    steps:
+      - name: Check out the container test harness
+        uses: actions/checkout@v7
+        with:
+          repository: alirobe/msys2-aslr-fork-test
+          ref: e53c674a1879cf28d0105e098e6fa06facf57fd9
+
+      - name: Download msys2-runtime artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: install
+          path: install
+
+      - name: Run the round in a Server 2019 container
+        shell: pwsh
+        run: >-
+          ./rootcause3.ps1
+          -Base mcr.microsoft.com/windows/servercore:ltsc2019
+          -Round ${{ matrix.round }}
+          -ReexecDllUrl "$env:GITHUB_WORKSPACE\install\usr\bin\msys-2.0.dll"
+
   msys2-tests:
     needs: [build, generate-msys2-tests-matrix]
     strategy:
