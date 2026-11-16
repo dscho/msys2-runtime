@@ -1,0 +1,82 @@
+name: MXC fork reproducer
+
+on: [push, workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  mxc-fork:
+    runs-on: windows-2025
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: setup-msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          update: true
+          install: msys2-devel base-devel autotools cocom diffutils gcc gettext-devel libiconv-devel make mingw-w64-cross-crt mingw-w64-cross-gcc mingw-w64-cross-zlib perl zlib-devel xmlto docbook-xsl libzstd-devel
+
+      - name: Build
+        shell: msys2 {0}
+        run: |
+          (cd winsup && ./autogen.sh)
+          ./configure --disable-dependency-tracking --with-msys2-runtime-commit="$GITHUB_SHA"
+          make -j8
+
+      - name: Assemble a private runtime around the new DLL
+        shell: msys2 {0}
+        run: |
+          set -x
+          bin=mxc/runtime/usr/bin
+          mkdir -p $bin mxc/runtime/etc
+          exes="/usr/bin/bash.exe /usr/bin/uname.exe /usr/bin/id.exe"
+          cp $exes $(ldd $exes | sed -n 's|.* => \(/usr/bin/msys-[^ ]*\.dll\) .*|\1|p' | sort -u) $bin/
+          cp x86_64-pc-cygwin/winsup/cygwin/new-msys-2.0.dll $bin/msys-2.0.dll
+          cp /etc/nsswitch.conf /etc/fstab mxc/runtime/etc/
+
+      - name: Install the MXC SDK
+        working-directory: mxc
+        shell: pwsh
+        run: |
+          npm install --no-save --ignore-scripts @microsoft/mxc-sdk@1.0.1
+          .\node_modules\@microsoft\mxc-sdk\bin\x64\wxc-exec.exe --probe
+
+      - name: Run Bash and a forked child inside an MXC process container
+        working-directory: mxc
+        shell: pwsh
+        run: |
+          $root = (Get-Location).Path
+          $script = "set -e; printf 'bash started\n'; /usr/bin/uname -a; /usr/bin/id; /usr/bin/bash --noprofile --norc -c 'echo child started'"
+          [ordered]@{
+            version = '1.0.0'
+            containment = 'processcontainer'
+            process = [ordered]@{
+              commandLine = "`"$root\runtime\usr\bin\bash.exe`" --noprofile --norc -c `"$script`""
+              cwd = $root
+              timeout = 30000
+            }
+            filesystem = @{ readwritePaths = @($root) }
+            network = [ordered]@{
+              egress = @{ default = 'deny' }
+              ingress = @{ default = 'deny'; hostLoopback = 'deny' }
+            }
+            ui = @{ disable = $false }
+          } | ConvertTo-Json -Depth 5 | Set-Content -Encoding ascii policy.json
+          & .\node_modules\@microsoft\mxc-sdk\bin\x64\wxc-exec.exe --log-file diagnostics.log policy.json 2>&1 | Tee-Object output.log
+          $code = $LASTEXITCODE
+          if ($code -ne 0 -or -not (Select-String -Quiet -SimpleMatch 'child started' output.log)) {
+            throw "wxc-exec exited with $code, or the forked child never ran"
+          }
+
+      - name: Upload MXC logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mxc-logs
+          path: |
+            mxc/policy.json
+            mxc/output.log
+            mxc/diagnostics.log
