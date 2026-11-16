@@ -1024,9 +1024,198 @@ __cygwin_exit_return:			\n\
 ");
 }
 
+/* In a Windows Server 2019 container, a file from the image layers is
+   mapped as an image straight from the layer store until some process
+   reads it through the container volume.  From then on new mappings come
+   from the volume, at a different ASLR base, so forked children load the
+   module at an address different from their parent's and fork () fails.
+
+   So, before the program runs: read each module we registered (the exe,
+   this DLL and the MSYS2 DLLs linked to them), then ask whether a fresh
+   mapping of it comes from a file other than the one its image is mapped
+   from.  If so, read the DLLs beside this one, start the program again
+   and pass on its exit code.  A mapping keeps its file, so the two names
+   can only differ if the file moved under us.  */
+typedef union
+{
+  MEMORY_SECTION_NAME msn;
+  BYTE buf[sizeof (MEMORY_SECTION_NAME) + NT_MAX_PATH * sizeof (WCHAR)];
+} section_name_buf;
+
+/* Which file is the view at ADDR mapped from?  */
+static PUNICODE_STRING
+section_name (PVOID addr, section_name_buf &u)
+{
+  SIZE_T len;
+  NTSTATUS status = NtQueryVirtualMemory (NtCurrentProcess (), addr,
+					  MemorySectionName, &u, sizeof u,
+					  &len);
+  return NT_SUCCESS (status) ? &u.msn.SectionFileName : NULL;
+}
+
+/* Read PATH's first byte.  In a Server 2019 container this is what moves
+   a layer file onto the volume; elsewhere it changes nothing.  Also called
+   from dlopen, ahead of LoadLibrary.  */
+void
+promote (PCWSTR path)
+{
+  HANDLE h = CreateFileW (path, GENERIC_READ, FILE_SHARE_VALID_FLAGS, NULL,
+			  OPEN_EXISTING, 0, NULL);
+  if (h == INVALID_HANDLE_VALUE)
+    return;
+  BYTE b;
+  DWORD n;
+  ReadFile (h, &b, 1, &n, NULL);
+  CloseHandle (h);
+}
+
+/* Which file does a fresh mapping of PATH come from, now?  */
+static PUNICODE_STRING
+fresh_section_name (PCWSTR path, section_name_buf &u)
+{
+  PUNICODE_STRING name = NULL;
+  HANDLE h = CreateFileW (path, GENERIC_READ, FILE_SHARE_VALID_FLAGS, NULL,
+			  OPEN_EXISTING, 0, NULL);
+  if (h == INVALID_HANDLE_VALUE)
+    return NULL;
+  HANDLE hs;
+  NTSTATUS status = NtCreateSection (&hs, SECTION_MAP_READ, NULL, NULL,
+				     PAGE_READONLY, SEC_COMMIT, h);
+  if (NT_SUCCESS (status))
+    {
+      PVOID base = NULL;
+      SIZE_T size = 1;
+      status = NtMapViewOfSection (hs, NtCurrentProcess (), &base, 0, 0,
+				   NULL, &size, ViewShare, 0, PAGE_READONLY);
+      if (NT_SUCCESS (status))
+	{
+	  name = section_name (base, u);
+	  NtUnmapViewOfSection (NtCurrentProcess (), base);
+	}
+      NtClose (hs);
+    }
+  CloseHandle (h);
+  return name;
+}
+
+/* Read MODULE's file, then tell whether a fresh mapping of it comes from
+   a file other than the one MODULE's image is mapped from.  */
+static bool
+promote_and_check (HMODULE module)
+{
+  static WCHAR path[NT_MAX_PATH] NO_COPY;
+  static section_name_buf was NO_COPY;
+  static section_name_buf now NO_COPY;
+  DWORD len = GetModuleFileNameW (module, path, NT_MAX_PATH);
+  if (!len || len >= NT_MAX_PATH)
+    return false;
+  promote (path);
+  PUNICODE_STRING w = section_name (module, was);
+  PUNICODE_STRING n = w ? fresh_section_name (path, now) : NULL;
+  return n && !RtlEqualUnicodeString (w, n, TRUE);
+}
+
+/* Read every DLL beside this one, so that programs started later map the
+   DLLs none of us has loaded from the volume, too.  */
+static void
+promote_siblings ()
+{
+  static WCHAR path[NT_MAX_PATH] NO_COPY;
+  DWORD len = GetModuleFileNameW (cygwin_hmodule, path, NT_MAX_PATH);
+  if (!len || len >= NT_MAX_PATH)
+    return;
+  PWCHAR base = wcsrchr (path, L'\\');
+  if (!base)
+    return;
+  base++;
+  size_t room = NT_MAX_PATH - (base - path);
+  wcscpy (base, L"*.dll");
+  WIN32_FIND_DATAW fd;
+  HANDLE hf = FindFirstFileW (path, &fd);
+  if (hf == INVALID_HANDLE_VALUE)
+    return;
+  do
+    if (wcslen (fd.cFileName) < room)
+      {
+	wcscpy (base, fd.cFileName);
+	promote (path);
+      }
+  while (FindNextFileW (hf, &fd));
+  FindClose (hf);
+}
+
+static BOOL WINAPI
+ignore_console_event (DWORD)
+{
+  return TRUE;
+}
+
+static void
+reexec_if_mapped_from_layer ()
+{
+  if (child_proc_info || dynamically_loaded)
+    return;
+
+  if (GetEnvironmentVariableW (L"MSYS2_RUNTIME_REEXEC", NULL, 0))
+    {
+      SetEnvironmentVariableW (L"MSYS2_RUNTIME_REEXEC", NULL);
+      return;
+    }
+
+  bool moved = promote_and_check (cygwin_hmodule);
+  moved |= promote_and_check (GetModuleHandle (NULL));
+  for (dll *d = dlls.istart (DLL_LINK); d; d = dlls.inext ())
+    moved |= promote_and_check (d->handle);
+  if (!moved || !SetEnvironmentVariableW (L"MSYS2_RUNTIME_REEXEC", L"1"))
+    return;
+  promote_siblings ();
+
+  STARTUPINFOW si;
+  GetStartupInfoW (&si);
+  si.lpReserved2 = NULL;
+  si.cbReserved2 = 0;
+  si.dwFlags |= STARTF_USESTDHANDLES;
+  si.hStdInput = GetStdHandle (STD_INPUT_HANDLE);
+  si.hStdOutput = GetStdHandle (STD_OUTPUT_HANDLE);
+  si.hStdError = GetStdHandle (STD_ERROR_HANDLE);
+
+  /* As fork does: keep the priority class, and without a console don't
+     give the new process one.  */
+  DWORD flags = GetPriorityClass (GetCurrentProcess ());
+  HANDLE con = CreateFileW (L"CONOUT$", GENERIC_WRITE,
+			    FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+			    OPEN_EXISTING, 0, NULL);
+  if (con != INVALID_HANDLE_VALUE)
+    CloseHandle (con);
+  else
+    flags |= DETACHED_PROCESS;
+
+  /* Console events are the new process' to handle.  This one must not
+     exit through a default handler: see below.  */
+  SetConsoleCtrlHandler (ignore_console_event, TRUE);
+
+  PROCESS_INFORMATION pi;
+  if (!CreateProcessW (global_progname, GetCommandLineW (), NULL, NULL, TRUE,
+		       flags, NULL, NULL, &si, &pi))
+    {
+      SetConsoleCtrlHandler (ignore_console_event, FALSE);
+      SetEnvironmentVariableW (L"MSYS2_RUNTIME_REEXEC", NULL);
+      return;
+    }
+  CloseHandle (pi.hThread);
+  WaitForSingleObject (pi.hProcess, INFINITE);
+  DWORD code = 1;
+  GetExitCodeProcess (pi.hProcess, &code);
+  /* The linked DLLs' initialization and the program's have not run, so
+     their finalization must not run either.  */
+  TerminateProcess (GetCurrentProcess (), code);
+}
+
 extern "C" void
 _dll_crt0 ()
 {
+  reexec_if_mapped_from_layer ();
+
   /* Starting with Windows 10 rel 1511, the main stack of an application is
      not reproducible if a 64 bit process has been started from a 32 bit
      process.  Given that we have enough virtual address space on 64 bit
