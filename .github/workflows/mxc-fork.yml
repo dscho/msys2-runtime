@@ -71,7 +71,35 @@ jobs:
             throw "wxc-exec exited with $code, or the forked child never ran"
           }
 
-      - name: Upload MXC logs
+      - name: Set up Copilot CLI
+        if: failure()
+        shell: bash
+        run: npm install -g @github/copilot
+
+      - name: Run Copilot CLI to debug failure
+        if: failure()
+        shell: bash
+        timeout-minutes: 150
+        env:
+          GH_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+        run: |
+          # The prompt is passed as an @file reference because cmd.exe,
+          # which runs copilot.cmd, limits command lines to about 8 KB.
+          copilot -p "Follow the instructions in @.github/copilot-prompts/debug-mxc-fork.md exactly." \
+            --model claude-opus-5.5 \
+            --effort max \
+            --context long_context \
+            --yolo </dev/null
+
+      - name: Archive Copilot session state
+        if: always()
+        shell: bash
+        run: |
+          if test -d ~/.copilot; then
+            tar czf copilot-session.tar.gz -C "$HOME" .copilot
+          fi
+
+      - name: Upload MXC logs and Copilot artifacts
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -80,3 +108,6 @@ jobs:
             mxc/policy.json
             mxc/output.log
             mxc/diagnostics.log
+            ci-diagnosis/
+            copilot-diagnosis.md
+            copilot-session.tar.gz
