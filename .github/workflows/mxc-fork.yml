@@ -36,6 +36,11 @@ jobs:
           cp $exes $(ldd $exes | sed -n 's|.* => \(/usr/bin/msys-[^ ]*\.dll\) .*|\1|p' | sort -u) $bin/
           cp x86_64-pc-cygwin/winsup/cygwin/new-msys-2.0.dll $bin/msys-2.0.dll
           cp /etc/nsswitch.conf /etc/fstab mxc/runtime/etc/
+          # Stand-in for https://github.com/msys2/MSYS2-packages/pull/6789
+          # and the package rebuilds that follow it: AppContainers relocate
+          # every image lacking DYNAMIC_BASE in every process, which fork()
+          # cannot survive.
+          peflags --dynamicbase=true $bin/*.exe $bin/*.dll
 
       - name: Install the MXC SDK
         working-directory: mxc
